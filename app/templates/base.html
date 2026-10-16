@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}好友圈服务端{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+    <a class="brand" href="{{ url_for('dashboard.home') }}">好友圈服务端</a>
+    <nav>
+        <a href="{{ url_for('dashboard.home') }}">用户</a>
+        <a href="{{ url_for('dashboard.moments') }}">动态</a>
+        {% if me %}
+            <span class="who">{{ me.effective_name }}</span>
+            <form method="post" action="{{ url_for('dashboard.logout') }}">
+                <button type="submit" class="link">退出</button>
+            </form>
+        {% endif %}
+    </nav>
+</header>
+<main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <ul class="flashes">
+                {% for category, message in messages %}
+                    <li class="flash flash-{{ category }}">{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>

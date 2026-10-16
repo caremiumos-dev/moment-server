@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}用户管理 - 好友圈服务端{% endblock %}
+{% block content %}
+<section class="stats">
+    <div class="stat"><span class="num">{{ rows|length }}</span><span class="label">账号</span></div>
+    <div class="stat"><span class="num">{{ total_moments }}</span><span class="label">动态</span></div>
+    <div class="stat"><span class="num">{{ total_comments }}</span><span class="label">评论</span></div>
+    <div class="stat"><span class="num">{{ total_likes }}</span><span class="label">点赞</span></div>
+</section>
+
+<section class="card">
+    <h2>新增账号</h2>
+    <form class="inline" method="post" action="{{ url_for('dashboard.create_user') }}">
+        <label>用户名<input type="text" name="username" required></label>
+        <label>密码<input type="text" name="password" required></label>
+        <label>watchId<input type="text" name="watch_id" required></label>
+        <label>昵称<input type="text" name="display_name"></label>
+        <label class="check"><input type="checkbox" name="is_admin"> 管理员</label>
+        <label class="check"><input type="checkbox" name="is_active" checked> 启用</label>
+        <button type="submit">创建</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>账号列表</h2>
+    <table>
+        <thead>
+        <tr>
+            <th>ID</th><th>用户名</th><th>watchId</th><th>昵称</th>
+            <th>动态</th><th>评论</th><th>点赞</th><th>Token</th>
+            <th>状态</th><th>操作</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+            {% set user = row.user %}
+            <tr>
+                <td>{{ user.id }}</td>
+                <td>
+                    {{ user.username }}
+                    {% if user.is_admin %}<span class="tag">管理员</span>{% endif %}
+                </td>
+                <td class="mono">{{ user.watch_id }}</td>
+                <td>{{ user.display_name }}</td>
+                <td>{{ row.moment_count }}</td>
+                <td>{{ row.comment_count }}</td>
+                <td>{{ row.like_count }}</td>
+                <td>{{ row.active_tokens }}</td>
+                <td>{{ "启用" if user.is_active else "停用" }}</td>
+                <td class="actions">
+                    <details>
+                        <summary>编辑</summary>
+                        <form method="post" action="{{ url_for('dashboard.update_user', user_id=user.id) }}">
+                            <label>昵称<input type="text" name="display_name" value="{{ user.display_name }}"></label>
+                            <label>新密码<input type="text" name="password" placeholder="留空不修改"></label>
+                            <input type="hidden" name="is_admin" value="off">
+                            <label class="check"><input type="checkbox" name="is_admin" value="on" {% if user.is_admin %}checked{% endif %}> 管理员</label>
+                            <input type="hidden" name="is_active" value="off">
+                            <label class="check"><input type="checkbox" name="is_active" value="on" {% if user.is_active %}checked{% endif %}> 启用</label>
+                            <button type="submit">保存</button>
+                        </form>
+                    </details>
+                    <form method="post" action="{{ url_for('dashboard.toggle_user', user_id=user.id) }}">
+                        <button type="submit">{{ "停用" if user.is_active else "启用" }}</button>
+                    </form>
+                    <form method="post" action="{{ url_for('dashboard.revoke_user_tokens', user_id=user.id) }}">
+                        <button type="submit">撤销 token</button>
+                    </form>
+                    <form method="post" action="{{ url_for('dashboard.delete_user', user_id=user.id) }}"
+                          onsubmit="return confirm('删除账号会同时删除其动态和评论，确定吗？');">
+                        <button type="submit" class="danger">删除</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

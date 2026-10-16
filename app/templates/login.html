@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}登录 - 好友圈服务端{% endblock %}
+{% block content %}
+<section class="card narrow">
+    <h1>管理员登录</h1>
+    <form method="post">
+        <label>用户名
+            <input type="text" name="username" autocomplete="username" autofocus required>
+        </label>
+        <label>密码
+            <input type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit">登录</button>
+    </form>
+</section>
+{% endblock %}

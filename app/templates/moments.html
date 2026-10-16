@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}动态管理 - 好友圈服务端{% endblock %}
+{% block content %}
+<section class="card">
+    <h2>动态（共 {{ total }} 条）</h2>
+    <table>
+        <thead>
+        <tr>
+            <th>ID</th><th>作者</th><th>类型</th><th>内容</th>
+            <th>话题</th><th>时间</th><th>操作</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for moment in moments %}
+            <tr>
+                <td>{{ moment.id }}</td>
+                <td>{{ moment.author.effective_name }}<br><span class="mono">{{ moment.author.watch_id }}</span></td>
+                <td>{{ moment.type }}</td>
+                <td class="content">{{ moment.content }}</td>
+                <td class="mono">{{ moment.topic_list_json }}</td>
+                <td>{{ moment.create_time.strftime("%Y-%m-%d %H:%M") }}</td>
+                <td class="actions">
+                    <form method="post" action="{{ url_for('dashboard.delete_moment', moment_id=moment.id) }}"
+                          onsubmit="return confirm('确定删除这条动态吗？');">
+                        <button type="submit" class="danger">删除</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% if total_page > 1 %}
+        <p class="pager">
+            第 {{ page }} / {{ total_page }} 页
+            {% if page > 1 %}<a href="{{ url_for('dashboard.moments', page=page - 1) }}">上一页</a>{% endif %}
+            {% if page < total_page %}<a href="{{ url_for('dashboard.moments', page=page + 1) }}">下一页</a>{% endif %}
+        </p>
+    {% endif %}
+</section>
+{% endblock %}
