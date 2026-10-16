@@ -61,6 +61,11 @@ class User(Base):
     last_chip_id: Mapped[str] = mapped_column(String(64), default="", server_default="", nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Banned accounts get ``000007`` on every call (see ``fail_banned``), which
+    # the watch shows as "account suspended".  This is deliberately separate
+    # from ``is_active``: that one is a plain ``000004`` lock-out.
+    is_banned: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    banned_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     last_login_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -165,6 +170,23 @@ class Like(Base):
     user: Mapped[User] = relationship()
 
 
+class ReviewRequest(Base):
+    """An appeal filed from the "account suspended" dialog.
+
+    Stored so the dashboard can show them; nothing consumes them automatically.
+    """
+
+    __tablename__ = "review_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    watch_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    contact: Mapped[str] = mapped_column(String(128), default="")
+    create_time: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    handled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+
+
 engine = None
 SessionLocal = None
 
@@ -174,6 +196,8 @@ ADDED_COLUMNS = {
     "users": {
         "chip_id": "VARCHAR(64) NOT NULL DEFAULT ''",
         "last_chip_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "is_banned": "BOOLEAN NOT NULL DEFAULT 0",
+        "banned_at": "DATETIME",
     },
     "comments": {
         "parent_id": "INTEGER",

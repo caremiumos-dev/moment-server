@@ -5,7 +5,7 @@ import secrets
 import datetime as dt
 from pathlib import Path
 
-from flask import Blueprint, request
+from flask import Blueprint, current_app, request
 from sqlalchemy import desc as sql_desc
 
 from app.api_common import (
@@ -369,7 +369,32 @@ def moment_template():
 @api.post("/moment/file/video/transfer")
 @authenticate()
 def video_transfer():
-    return fail(ERROR_INVALID_PARAM, "video transfer is not supported by this server")
+    """Video upload tokens, including the thumbnail pair.
+
+    ``PublishService.getUploadVideoToken`` reads ``source``/``uploadToken`` for
+    the mp4 and ``icon``/``iconUploadToken`` for the webp cover, then hands both
+    to the uploader with the keys returned here.
+    """
+    from flask import g
+
+    payload = _body()
+    video_key = _new_media_key(g.current_user.watch_id, payload.get("format") or ".mp4")
+    icon_key = _new_media_key(g.current_user.watch_id, payload.get("iconFormat") or ".webp")
+    return ok(
+        {
+            "type": "1",
+            "zone": _ZONE,
+            "wangSuUrl": "",
+            "uploadToken": _upload_token(video_key),
+            "uploadTokenDeadLine": _deadline(),
+            "iconUploadToken": _upload_token(icon_key),
+            "iconUploadTokenDeadLine": _deadline(),
+            "source": _resource(video_key),
+            "icon": _resource(icon_key),
+            "transfer": _resource(video_key),
+            "customParamMap": {},
+        }
+    )
 
 
 def _safe_key(key):
@@ -385,21 +410,52 @@ def _safe_key(key):
 @api.post("/moment/file/pic/transfer")
 @authenticate()
 def photo_upload_token():
-    """Picture upload tokens are not available yet.
+    """Hand out the key/token pair for a single picture upload."""
+    from flask import g
 
-    The watch hands the token straight to the Qiniu SDK and uploads to Qiniu's
-    own hosts, so a self-hosted token cannot redirect the bytes.  Supporting
-    pictures therefore needs a change on the client side and is out of scope
-    for this first step.
-    """
-    return fail(ERROR_INVALID_PARAM, "picture upload is not supported by this server yet")
+    payload = _body()
+    key = _new_media_key(g.current_user.watch_id, payload.get("format") or ".webp")
+    return ok(_photo_token(key))
 
 
 @api.post("/moment/file/pics/transfer")
 @authenticate()
 def photo_upload_tokens():
     """Batch variant of :func:`photo_upload_token`."""
-    return fail(ERROR_INVALID_PARAM, "picture upload is not supported by this server yet")
+    from flask import g
+
+    payload = _body() or []
+    if not isinstance(payload, list):
+        return fail(ERROR_INVALID_PARAM, "expected a list of photo token params")
+    return ok(
+        [
+            _photo_token(_new_media_key(g.current_user.watch_id, (entry or {}).get("format") or ".webp"))
+            for entry in payload
+        ]
+    )
+
+
+@api.post("/moment/file/upload")
+def upload_media():
+    """Store one uploaded file.
+
+    Authentication is the upload token itself (``local:<key>``) rather than the
+    request headers, because the client uploads with a bare HTTP client that
+    does not run the app's signing interceptors.
+    """
+    key = _safe_key(request.headers.get("Upload-Key") or request.args.get("key"))
+    token = request.headers.get("Upload-Token") or request.args.get("token")
+    if key is None:
+        return fail(ERROR_INVALID_PARAM, "invalid upload key")
+    if token != _upload_token(key):
+        return fail(ERROR_INVALID_PARAM, "invalid upload token")
+    payload = request.get_data()
+    if not payload:
+        return fail(ERROR_INVALID_PARAM, "empty upload body")
+    media_dir = Path(current_app.config["MEDIA_DIR"])
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / key).write_bytes(payload)
+    return ok({"key": key, "size": len(payload), "url": _media_url(key)})
 
 
 @api.post("/moment/file/download")
@@ -408,7 +464,7 @@ def file_download_url():
     key = _safe_key((_body() or {}).get("key"))
     if key is None:
         return fail(ERROR_INVALID_PARAM, "invalid key")
-    return ok({"urls": [_media_resource(key)]})
+    return ok({"urls": [_resource(key)]})
 
 
 @api.post("/moment/file/batchDownload")
@@ -419,17 +475,61 @@ def file_batch_download_url():
     for key in keys:
         safe = _safe_key(key)
         if safe is not None:
-            urls.append(_media_resource(safe))
+            urls.append(_resource(safe))
     return ok({"urls": urls})
 
 
-def _media_resource(key):
+_ZONE = "self"
+# The client refreshes a url once ``now > urlDeadline``, so hand out a real
+# deadline instead of 0 to avoid a needless extra round trip per image.
+_URL_LIFETIME_MILLIS = 24 * 60 * 60 * 1000
+
+
+def _deadline():
+    return int(utcnow().timestamp() * 1000) + _URL_LIFETIME_MILLIS
+
+
+def _new_media_key(watch_id, suffix):
+    """A unique, path-safe object key that keeps the client's extension."""
+    suffix = (suffix or "").strip()
+    if not suffix.startswith("."):
+        suffix = f".{suffix}" if suffix else ""
+    return f"{watch_id}_{secrets.token_hex(16)}{suffix}"
+
+
+def _upload_token(key):
+    """Token the client echoes back on upload; validated by :func:`upload_media`."""
+    return f"local:{key}"
+
+
+def _media_url(key):
+    return f"{request.host_url.rstrip('/')}/media/{key}"
+
+
+def _resource(key):
+    """A ``CloudFileResource`` pointing at our own ``/media`` route."""
     return {
         "key": key,
-        "downloadUrl": f"{request.host_url.rstrip('/')}/media/{key}",
-        "urlDeadline": 0,
+        "downloadUrl": _media_url(key),
+        "urlDeadline": _deadline(),
         "width": 320,
         "height": 360,
+    }
+
+
+def _photo_token(key):
+    """A ``PhotoTokenVo`` whose ``source``/``smallPic`` point at our media route."""
+    return {
+        "type": "1",
+        "zone": _ZONE,
+        "wangSuUrl": "",
+        "uploadToken": _upload_token(key),
+        "uploadTokenDeadLine": _deadline(),
+        "source": _resource(key),
+        # No separate thumbnail: the widget falls back to ``source`` when
+        # ``smallPic`` is absent, which avoids serving the image twice.
+        "smallPic": None,
+        "customParamMap": {},
     }
 
 

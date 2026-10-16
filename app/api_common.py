@@ -12,12 +12,19 @@ from functools import wraps
 
 from flask import g, jsonify, request
 
+from app.models import AuthToken, User, get_session
+
 SUCCESS = "000001"
 ERROR_INVALID_PARAM = "000002"
 ERROR_TOKEN_EXPIRED = "000003"
 ERROR_ACCOUNT_DISABLED = "000004"
 ERROR_NOT_FOUND = "000005"
 ERROR_FORBIDDEN = "000006"
+# The original service answers a banned account with ``000007`` plus this exact
+# desc/tips pair; the watch keys its "account suspended" prompt off them.
+ERROR_ACCOUNT_SUSPENDED = "000007"
+SUSPENDED_DESC = "request parameter is invalid."
+SUSPENDED_TIPS = "Your account has been suspend"
 # ``HttpAuthManager.AUTH_ERROR_CODE``: the client broadcasts "auth failed" and
 # the launcher re-authenticates the watch.
 ERROR_AUTH_FAILED = "000016"
@@ -46,6 +53,22 @@ def ok(data=None, desc=""):
 def fail(code, desc=""):
     """Failure envelope; the client surfaces ``desc``/``watchTips`` to the user."""
     return jsonify({"code": code, "data": None, "desc": desc, "watchTips": desc})
+
+
+def fail_banned():
+    """The envelope a banned account gets on every authenticated call.
+
+    ``data`` is present (null) because the client's ``NetBaseResult`` always
+    reads it, and ``watchTips`` carries the exact string the watch matches on.
+    """
+    return jsonify(
+        {
+            "code": ERROR_ACCOUNT_SUSPENDED,
+            "data": None,
+            "desc": SUSPENDED_DESC,
+            "watchTips": SUSPENDED_TIPS,
+        }
+    )
 
 
 def parse_base_request_param(raw):
@@ -85,14 +108,17 @@ def request_identity():
     }
 
 
-def authenticate(required=True):
-    """Resolve ``g.current_user`` from the request identity."""
+def authenticate(required=True, allow_banned=False):
+    """Resolve ``g.current_user`` from the request identity.
+
+    ``allow_banned`` exists for the one endpoint a banned account must still be
+    able to reach: filing an appeal.  Everywhere else a banned account is
+    answered with ``000007`` before the view runs.
+    """
 
     def decorator(view):
         @wraps(view)
         def wrapper(*args, **kwargs):
-            from app.models import AuthToken, User, get_session
-
             g.current_user = None
             g.identity = request_identity()
             session = get_session()
@@ -101,6 +127,15 @@ def authenticate(required=True):
                 if account_id:
                     user = session.query(User).filter_by(watch_id=account_id).one_or_none()
                     if user is not None:
+                        if user.is_banned and not allow_banned:
+                            # Checked before anything else: a banned account must
+                            # get 000007 even if it is otherwise usable.
+                            return fail_banned()
+                        if user.is_banned:
+                            # Appeal endpoint: let it through, but the view may
+                            # not treat the account as a normal signed-in user.
+                            g.current_user = user
+                            return view(*args, **kwargs)
                         if not user.is_active:
                             return fail(ERROR_ACCOUNT_DISABLED, "account disabled")
                         chip_id = g.identity["chip_id"]
@@ -119,6 +154,8 @@ def authenticate(required=True):
                     token_value = request.headers.get(AUTH_ID_HEADER)
                     if token_value:
                         token = session.query(AuthToken).filter_by(token=token_value).one_or_none()
+                        if token is not None and token.user.is_banned and not allow_banned:
+                            return fail_banned()
                         if token is not None and not token.user.is_active:
                             return fail(ERROR_ACCOUNT_DISABLED, "account disabled")
                         if token is not None and token.is_valid:

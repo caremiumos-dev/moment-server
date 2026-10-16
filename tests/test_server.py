@@ -359,6 +359,313 @@ class MomentServerTest(unittest.TestCase):
         ).get_json()
         self.assertEqual(accepted["code"], "000001")
 
+    def test_photo_upload_round_trip(self):
+        """Token request -> upload -> download url -> fetch the bytes back."""
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "shooter", "password": "pw", "watch_id": "W8008", "is_active": "on"},
+        )
+        headers = {"Base-Request-Param": base_param("W8008")}
+
+        token = self.client.post(
+            "/moment/file/pic/transfer",
+            json={"format": ".webp", "watchId": "W8008"},
+            headers=headers,
+        ).get_json()["data"]
+        key = token["source"]["key"]
+        self.assertTrue(key.endswith(".webp"))
+        self.assertEqual(token["smallPic"], None)
+        self.assertEqual(token["uploadToken"], f"local:{key}")
+
+        # Uploading with the wrong token is rejected.
+        bad = self.client.post(
+            "/moment/file/upload",
+            data=b"payload",
+            headers={"Upload-Key": key, "Upload-Token": "local:someone-else"},
+        )
+        self.assertEqual(bad.get_json()["code"], "000002")
+
+        uploaded = self.client.post(
+            "/moment/file/upload",
+            data=b"image-bytes",
+            headers={"Upload-Key": key, "Upload-Token": token["uploadToken"]},
+        ).get_json()
+        self.assertEqual(uploaded["code"], "000001")
+        self.assertEqual(uploaded["data"]["size"], len(b"image-bytes"))
+
+        # The download endpoint hands back a url that really serves the file.
+        resource = self.client.post(
+            "/moment/file/download", json={"key": key}, headers=headers
+        ).get_json()["data"]["urls"][0]
+        self.assertTrue(resource["downloadUrl"].endswith(f"/media/{key}"))
+        self.assertGreater(resource["urlDeadline"], 0)
+        fetched = self.client.get(f"/media/{key}")
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.get_data(), b"image-bytes")
+        fetched.close()
+
+    def test_photo_upload_batch_and_path_traversal(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "batch", "password": "pw", "watch_id": "W9009", "is_active": "on"},
+        )
+        headers = {"Base-Request-Param": base_param("W9009")}
+        tokens = self.client.post(
+            "/moment/file/pics/transfer",
+            json=[{"format": ".jpg"}, {"format": ".png"}],
+            headers=headers,
+        ).get_json()["data"]
+        self.assertEqual(len(tokens), 2)
+        self.assertTrue(tokens[0]["source"]["key"].endswith(".jpg"))
+        self.assertTrue(tokens[1]["source"]["key"].endswith(".png"))
+        self.assertNotEqual(tokens[0]["source"]["key"], tokens[1]["source"]["key"])
+
+        # A key with a path separator must never be accepted.
+        escaped = self.client.post(
+            "/moment/file/upload",
+            data=b"x",
+            headers={"Upload-Key": "../evil.txt", "Upload-Token": "local:../evil.txt"},
+        ).get_json()
+        self.assertEqual(escaped["code"], "000002")
+
+    def test_video_transfer_returns_both_keys(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "filmer", "password": "pw", "watch_id": "W1010", "is_active": "on"},
+        )
+        headers = {"Base-Request-Param": base_param("W1010")}
+        data = self.client.post(
+            "/moment/file/video/transfer",
+            json={"format": ".mp4", "iconFormat": ".webp", "watchId": "W1010"},
+            headers=headers,
+        ).get_json()["data"]
+        self.assertTrue(data["source"]["key"].endswith(".mp4"))
+        self.assertTrue(data["icon"]["key"].endswith(".webp"))
+        self.assertNotEqual(data["source"]["key"], data["icon"]["key"])
+        self.assertEqual(data["uploadToken"], f"local:{data['source']['key']}")
+        self.assertEqual(data["iconUploadToken"], f"local:{data['icon']['key']}")
+
+    def test_extra_endpoints_used_by_the_personal_page(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "personal", "password": "pw", "watch_id": "W1111", "is_active": "on"},
+        )
+        headers = {"Base-Request-Param": base_param("W1111")}
+
+        info = self.client.post(
+            "/smartwatch/geniusAccount/watchGetInfo", json={}, headers=headers
+        ).get_json()
+        self.assertEqual(info["code"], "000001")
+        self.assertEqual(info["data"]["watchId"], "W1111")
+
+        unite = self.client.post(
+            "/social-service/personalInfo/getPersonalInfoUnite", json={}, headers=headers
+        ).get_json()["data"]
+        self.assertEqual(unite["geniusAccount"]["watchId"], "W1111")
+        self.assertEqual(unite["simpleMedal"]["medals"], [])
+        self.assertEqual(unite["socializeUser"]["statusId"], 0)
+
+        grade = self.client.get(
+            "/operation/exp/getWatchScoreLevelInfo/W1111/model", headers=headers
+        ).get_json()["data"]
+        self.assertEqual(grade["level"], 1)
+        self.assertGreater(grade["timeStamp"], 0)
+
+        for path in [
+            "/social-service/medal/simple",
+            "/social-service/personalInfo/getPersonalInfo",
+            "/social-service/personalInfo/like",
+            "/watchfriend/delFriendByWatch",
+            "/social-service/prerogative/getpersonal",
+            "/social-service/convention/home",
+            "/social-service/convention/content",
+            "/social-service/violation/initViolationInfo",
+            "/social-service/inform/content",
+            "/social-service/violation/searchMomentRiskRecord",
+            "/social-service/violation/uploadDelayCount",
+            "/social-service/violation/uploadBanRecord",
+            "/oauth/openAccount/getOpenId",
+            "/route-service/route/getRouteInfo",
+        ]:
+            with self.subTest(path=path):
+                response = self.client.post(path, json={}, headers=headers).get_json()
+                self.assertEqual(response["code"], "000001", path)
+
+        whitelist = self.client.get(
+            "/social-service/config/getWhiteH5", headers=headers
+        ).get_json()
+        self.assertEqual(whitelist["data"], [])
+        resources = self.client.get(
+            "/social-service/prerogative/getResource", headers=headers
+        ).get_json()
+        self.assertEqual(resources["data"], [])
+        h5 = self.client.get(
+            "/smartwatch/server/getWatchH5Url/com.xtc.moment", headers=headers
+        ).get_json()
+        self.assertEqual(h5["data"], [])
+
+    def test_banned_account_gets_the_suspend_envelope(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "banned", "password": "pw", "watch_id": "W1212", "is_active": "on"},
+        )
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            user_id = db.query(User).filter_by(watch_id="W1212").one().id
+            db.close()
+
+        headers = {"Base-Request-Param": base_param("W1212")}
+        # Before the ban the account works normally.
+        self.assertEqual(
+            self.client.post("/moment/search", json={}, headers=headers).get_json()["code"],
+            "000001",
+        )
+
+        self.client.post(f"/users/{user_id}/ban")
+        # Every authenticated call now answers 000007 with the exact strings the
+        # watch matches on when it shows the "account suspended" prompt.
+        for path in ["/moment/search", "/moment/public", "/moment/isBannedToPost"]:
+            with self.subTest(path=path):
+                response = self.client.post(path, json={}, headers=headers).get_json()
+                self.assertEqual(response["code"], "000007", path)
+                self.assertEqual(response["desc"], "request parameter is invalid.")
+                self.assertEqual(response["watchTips"], "Your account has been suspend")
+                self.assertIsNone(response["data"])
+
+        # The optional-token endpoints are gated too.
+        self.assertEqual(
+            self.client.get("/moment-service/topic/recommend/list", headers=headers).get_json()["code"],
+            "000007",
+        )
+
+    def test_banned_account_cannot_log_in(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "noluck", "password": "pw", "watch_id": "W1313", "is_active": "on"},
+        )
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            user_id = db.query(User).filter_by(watch_id="W1313").one().id
+            db.close()
+        self.client.post(f"/users/{user_id}/ban")
+
+        login = self.client.post(
+            "/moment/auth/login", json={"username": "noluck", "password": "pw"}
+        ).get_json()
+        self.assertEqual(login["code"], "000007")
+        self.assertEqual(login["watchTips"], "Your account has been suspend")
+
+    def test_unban_restores_access(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "temp", "password": "pw", "watch_id": "W1414", "is_active": "on"},
+        )
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            user_id = db.query(User).filter_by(watch_id="W1414").one().id
+            db.close()
+
+        headers = {"Base-Request-Param": base_param("W1414")}
+        self.client.post(f"/users/{user_id}/ban")
+        self.assertEqual(
+            self.client.post("/moment/search", json={}, headers=headers).get_json()["code"],
+            "000007",
+        )
+        self.client.post(f"/users/{user_id}/unban")
+        self.assertEqual(
+            self.client.post("/moment/search", json={}, headers=headers).get_json()["code"],
+            "000001",
+        )
+
+    def test_review_request_is_recorded_and_visible(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "appealer", "password": "pw", "watch_id": "W1515", "is_active": "on"},
+        )
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            user_id = db.query(User).filter_by(watch_id="W1515").one().id
+            db.close()
+        self.client.post(f"/users/{user_id}/ban")
+
+        # A banned account can still file an appeal: this endpoint is the whole
+        # reason the dialog exists, so it must not answer 000007.
+        headers = {"Base-Request-Param": base_param("W1515")}
+        filed = self.client.post(
+            "/extra/review-request",
+            json={"watchId": "W1515", "reason": "我没有违规", "contact": "12345678"},
+            headers=headers,
+        ).get_json()
+        self.assertEqual(filed["code"], "000001")
+
+        with self.app.app_context():
+            from app.models import ReviewRequest, get_session
+
+            db = get_session()
+            review = db.query(ReviewRequest).filter_by(watch_id="W1515").one()
+            self.assertEqual(review.reason, "我没有违规")
+            self.assertEqual(review.contact, "12345678")
+            self.assertEqual(review.user_id, user_id)
+            self.assertFalse(review.handled)
+            review_id = review.id
+            db.close()
+
+        # The dashboard lists it and can mark it handled.
+        page = self.client.get("/dashboard")
+        self.assertIn("我没有违规", page.get_data(as_text=True))
+        self.client.post(f"/reviews/{review_id}/handled")
+        with self.app.app_context():
+            from app.models import ReviewRequest, get_session
+
+            db = get_session()
+            self.assertTrue(db.get(ReviewRequest, review_id).handled)
+            db.close()
+        self.assertNotIn("我没有违规", self.client.get("/dashboard").get_data(as_text=True))
+
+    def test_dashboard_renders_the_ban_controls(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "shown", "password": "pw", "watch_id": "W1616", "is_active": "on"},
+        )
+        page = self.client.get("/dashboard").get_data(as_text=True)
+        # The ban button goes through the in-page modal rather than a native
+        # confirm(), and the modal carries the exact text the watch shows.
+        self.assertIn("data-ban-form", page)
+        self.assertIn('id="banned-modal"', page)
+        self.assertIn("你的账户已被封禁", page)
+        self.assertIn("申请复核", page)
+        self.assertIn("下载您所发布过的动态", page)
+        self.assertIn("banned.js", page)
+
+        # After banning, the row flips to the unban action.
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            user_id = db.query(User).filter_by(watch_id="W1616").one().id
+            db.close()
+        self.client.post(f"/users/{user_id}/ban")
+        page = self.client.get("/dashboard").get_data(as_text=True)
+        self.assertIn("已封禁", page)
+        self.assertIn("解除封禁", page)
+
 
 if __name__ == "__main__":
     unittest.main()

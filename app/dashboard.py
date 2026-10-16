@@ -10,7 +10,16 @@ from app.auth import (
     revoke_tokens,
     start_session,
 )
-from app.models import AuthToken, Comment, Like, Moment, User, get_session
+from app.models import (
+    AuthToken,
+    Comment,
+    Like,
+    Moment,
+    ReviewRequest,
+    User,
+    get_session,
+    utcnow,
+)
 
 dashboard = Blueprint("dashboard", __name__)
 
@@ -32,6 +41,8 @@ def login():
             user = db.query(User).filter_by(username=username).one_or_none()
             if user is None or not user.check_password(password):
                 flash("用户名或密码不正确", "error")
+            elif user.is_banned:
+                flash("该账号已被封禁", "error")
             elif not user.is_active:
                 flash("该账号已被停用", "error")
             elif not user.is_admin:
@@ -67,11 +78,21 @@ def home():
                     "active_tokens": db.query(AuthToken)
                     .filter(AuthToken.user_id == user.id, AuthToken.revoked.is_(False))
                     .count(),
+                    "pending_reviews": db.query(ReviewRequest)
+                    .filter(ReviewRequest.user_id == user.id, ReviewRequest.handled.is_(False))
+                    .count(),
                 }
             )
         total_moments = db.query(Moment).filter(Moment.deleted.is_(False)).count()
         total_comments = db.query(Comment).filter(Comment.deleted.is_(False)).count()
         total_likes = db.query(Like).count()
+        reviews = (
+            db.query(ReviewRequest)
+            .filter(ReviewRequest.handled.is_(False))
+            .order_by(ReviewRequest.create_time.desc())
+            .limit(50)
+            .all()
+        )
         return render_template(
             "dashboard.html",
             rows=rows,
@@ -79,6 +100,7 @@ def home():
             total_moments=total_moments,
             total_comments=total_comments,
             total_likes=total_likes,
+            reviews=reviews,
         )
     finally:
         db.close()
@@ -211,6 +233,68 @@ def revoke_user_tokens(user_id):
         else:
             count = revoke_tokens(db, user)
             flash(f"已撤销 {user.username} 的 {count} 个 token", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.home"))
+
+
+@dashboard.post("/users/<int:user_id>/ban")
+@login_required
+def ban_user(user_id):
+    """Suspend an account.
+
+    A banned account answers ``000007`` on every call, which the watch renders
+    as the "your account has been suspended" prompt, and it cannot log in.
+    """
+    db = get_session()
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            flash("账号不存在", "error")
+        elif user.id == current_user().id:
+            flash("不能封禁当前登录的账号", "error")
+        else:
+            user.is_banned = True
+            user.banned_at = utcnow()
+            # Drop live sessions so the watch re-authenticates immediately.
+            revoke_tokens(db, user)
+            db.commit()
+            flash(f"{user.username} 已被封禁", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.home"))
+
+
+@dashboard.post("/users/<int:user_id>/unban")
+@login_required
+def unban_user(user_id):
+    db = get_session()
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            flash("账号不存在", "error")
+        else:
+            user.is_banned = False
+            user.banned_at = None
+            db.commit()
+            flash(f"已解除 {user.username} 的封禁", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.home"))
+
+
+@dashboard.post("/reviews/<int:review_id>/handled")
+@login_required
+def mark_review_handled(review_id):
+    db = get_session()
+    try:
+        review = db.get(ReviewRequest, review_id)
+        if review is None:
+            flash("复核申请不存在", "error")
+        else:
+            review.handled = True
+            db.commit()
+            flash("已标记为处理完毕", "ok")
     finally:
         db.close()
     return redirect(url_for("dashboard.home"))

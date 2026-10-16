@@ -74,6 +74,39 @@ python run.py
 但账号一旦绑定，`unkown` 同样通不过校验，等于该表暂时不可用；这时在 dashboard
 点「解绑设备」即可恢复。
 
+## 封禁账号
+
+dashboard 的账号列表里点「封禁」即可。封禁后的行为：
+
+* **所有接口**都返回线上那条封禁响应（`app/api_common.py` 的 `fail_banned`）：
+
+  ```json
+  {"code":"000007","data":null,"desc":"request parameter is invalid.","watchTips":"Your account has been suspend"}
+  ```
+
+* **无法登录**：`/moment/auth/login` 同样返回上面的包体
+* 已签发的 token 会一并撤销，手表下次请求立刻感知
+* 列表里该行显示 `已封禁`，按钮变成「解除封禁」
+
+客户端的 `PublishErrorUtil` 会把 `000007` 识别成账号封禁，弹出
+**「你的账户已被封禁」** 弹窗，正文为
+「经过我们的内部调查，您可能存在违反我们的用户协议的行为，如果你觉得这是一个错误，请点击申请复核，否则您可以下载您所发布过的动态」，
+三个按钮分别是 **申请复核** / **下载我发布过的动态** / **我知道了**。
+拉取动态列表失败时也会弹这个窗，不只是发布失败。
+
+### 申请复核
+
+「申请复核」调用 `POST /extra/review-request`（body：`watchId` / `reason` / `contact`）。
+这个接口对封禁账号**放行** —— 否则它会先被 `000007` 拦掉，申诉入口就没意义了，
+所以它的装饰器是 `@authenticate(required=False, allow_banned=True)`。
+
+提交后 dashboard 的「复核申请」卡片会列出来，可以「标记已处理」。
+
+### 下载已发布的动态
+
+「下载我发布过的动态」打开好友圈主页面。原厂没有批量导出接口，
+所以这里保持同样的行为，不做额外的打包下载。
+
 响应统一是 `{"code": "000001", "data": ..., "desc": "", "watchTips": ""}`，
 只有 `000001` 会被客户端的 `HttpRxJavaCallback` 当作成功。
 

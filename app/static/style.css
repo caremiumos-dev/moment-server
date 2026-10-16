@@ -111,6 +111,9 @@ th { color: var(--muted); font-weight: 500; }
     font-size: 11px;
 }
 
+.tag-danger { background: #fdeaea; color: #a12a2a; }
+.tag-warn { background: #fff4e0; color: #9a6200; }
+
 .actions { display: flex; flex-direction: column; gap: 6px; }
 .actions form { margin: 0; }
 .actions details form { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
@@ -123,3 +126,43 @@ th { color: var(--muted); font-weight: 500; }
 
 .pager { color: var(--muted); }
 .pager a { margin-left: 12px; color: var(--accent); text-decoration: none; }
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(20, 22, 28, 0.55);
+    z-index: 50;
+}
+
+.modal-backdrop[hidden] { display: none; }
+
+.modal {
+    width: min(420px, calc(100vw - 48px));
+    background: var(--card);
+    border-radius: 12px;
+    padding: 22px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+.modal-title { margin: 0 0 10px; font-size: 17px; }
+.modal-body { margin: 0 0 18px; color: var(--muted); line-height: 1.7; }
+.modal-body code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: #f1f3f8;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px;
+}
+
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+button.primary {
+    border-color: var(--danger);
+    background: var(--danger);
+    color: #fff;
+}
+
+button.primary:hover { border-color: #b93a3a; background: #b93a3a; color: #fff; }

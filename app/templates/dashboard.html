@@ -29,7 +29,7 @@
         <tr>
             <th>ID</th><th>用户名</th><th>watchId</th><th>昵称</th>
             <th>chipId</th><th>动态</th><th>评论</th><th>点赞</th><th>Token</th>
-            <th>状态</th><th>操作</th>
+            <th>状态</th><th>复核</th><th>操作</th>
         </tr>
         </thead>
         <tbody>
@@ -56,7 +56,14 @@
                 <td>{{ row.comment_count }}</td>
                 <td>{{ row.like_count }}</td>
                 <td>{{ row.active_tokens }}</td>
-                <td>{{ "启用" if user.is_active else "停用" }}</td>
+                <td>
+                    {% if user.is_banned %}<span class="tag tag-danger">已封禁</span>
+                    {% else %}{{ "启用" if user.is_active else "停用" }}{% endif %}
+                </td>
+                <td>
+                    {% if row.pending_reviews %}<span class="tag tag-warn">{{ row.pending_reviews }} 条待处理</span>
+                    {% else %}<span class="muted">—</span>{% endif %}
+                </td>
                 <td class="actions">
                     <details>
                         <summary>编辑</summary>
@@ -77,6 +84,16 @@
                     <form method="post" action="{{ url_for('dashboard.revoke_user_tokens', user_id=user.id) }}">
                         <button type="submit">撤销 token</button>
                     </form>
+                    {% if user.is_banned %}
+                        <form method="post" action="{{ url_for('dashboard.unban_user', user_id=user.id) }}">
+                            <button type="submit">解除封禁</button>
+                        </form>
+                    {% else %}
+                        <form method="post" action="{{ url_for('dashboard.ban_user', user_id=user.id) }}"
+                              data-ban-form>
+                            <button type="submit" class="danger">封禁</button>
+                        </form>
+                    {% endif %}
                     {% if user.chip_id %}
                         <form method="post" action="{{ url_for('dashboard.unbind_chip', user_id=user.id) }}">
                             <button type="submit">解绑设备</button>
@@ -96,4 +113,35 @@
         </tbody>
     </table>
 </section>
+
+<section class="card">
+    <h2>复核申请</h2>
+    {% if reviews %}
+        <table>
+            <thead>
+            <tr><th>ID</th><th>watchId</th><th>理由</th><th>联系方式</th><th>时间</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+            {% for review in reviews %}
+                <tr>
+                    <td>{{ review.id }}</td>
+                    <td class="mono">{{ review.watch_id }}</td>
+                    <td class="content">{{ review.reason }}</td>
+                    <td>{{ review.contact }}</td>
+                    <td>{{ review.create_time.strftime("%Y-%m-%d %H:%M") }}</td>
+                    <td class="actions">
+                        <form method="post" action="{{ url_for('dashboard.mark_review_handled', review_id=review.id) }}">
+                            <button type="submit">标记已处理</button>
+                        </form>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="muted">暂无待处理的复核申请。</p>
+    {% endif %}
+</section>
+{% include "_banned_modal.html" %}
+<script src="{{ url_for('static', filename='banned.js') }}"></script>
 {% endblock %}

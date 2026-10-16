@@ -24,6 +24,7 @@ from app.api_common import (
     ERROR_INVALID_PARAM,
     ERROR_TOKEN_EXPIRED,
     fail,
+    fail_banned,
     normalize_chip_id,
     ok,
 )
@@ -116,6 +117,9 @@ def watch_login():
         user = db.query(User).filter_by(username=username).one_or_none()
         if user is None or not user.check_password(password):
             return fail(ERROR_INVALID_PARAM, "invalid username or password")
+        if user.is_banned:
+            # Same envelope the watch shows as "account suspended".
+            return fail_banned()
         if not user.is_active:
             return fail(ERROR_ACCOUNT_DISABLED, "account disabled")
         chip_id = normalize_chip_id(payload.get("chipId"))

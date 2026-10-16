@@ -22,10 +22,12 @@ def create_app(config_object=Config, overrides=None):
     init_engine(app.config["DATABASE_URL"])
 
     from app.api import api
+    from app.api_extra import extra
     from app.auth import auth
     from app.dashboard import dashboard
 
     app.register_blueprint(api)
+    app.register_blueprint(extra)
     app.register_blueprint(auth)
     app.register_blueprint(dashboard)
 

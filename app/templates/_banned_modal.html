@@ -1,0 +1,16 @@
+{# 封禁确认弹窗。文案与客户端那份「你的账户已被封禁」提示一致。 #}
+<div class="modal-backdrop" id="banned-modal" hidden>
+    <div class="modal">
+        <h2 class="modal-title">确认封禁该账号？</h2>
+        <p class="modal-body">
+            封禁后该账号的所有请求都会返回 <code>000007</code>，
+            手表端会弹出「你的账户已被封禁」提示并无法登录。
+            内容为：经过我们的内部调查，您可能存在违反我们的用户协议的行为，
+            如果你觉得这是一个错误，请点击申请复核，否则您可以下载您所发布过的动态。
+        </p>
+        <div class="modal-actions">
+            <button type="button" class="primary" id="banned-confirm">确认封禁</button>
+            <button type="button" id="banned-cancel">取消</button>
+        </div>
+    </div>
+</div>
