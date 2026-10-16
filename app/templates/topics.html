@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}小括号 - 好友圈服务端{% endblock %}
+{% block content %}
+<section class="card">
+    <h2>话题配置</h2>
+    <p class="muted">
+        maxTopicCount 是一条动态最多能挂的话题数；名称长度限制由客户端在输入时校验。
+        官方色用于后台配置的话题，用户色用于用户自己输入过的话题。
+    </p>
+    <form class="inline" method="post" action="{{ url_for('dashboard.save_topic_config') }}">
+        <label>每条约数<input type="text" name="max_topic_count" value="{{ config.maxTopicCount }}"></label>
+        <label>名称长度<input type="text" name="name_max_length" value="{{ config.nameMaxLength }}"></label>
+        <label>官方色<input type="text" name="official_color" value="{{ config.officialColor }}"></label>
+        <label>用户色<input type="text" name="user_color" value="{{ config.userColor }}"></label>
+        <button type="submit">保存配置</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>新增推荐话题</h2>
+    <form class="inline" method="post" action="{{ url_for('dashboard.create_topic') }}">
+        <label>话题名<input type="text" name="topic_name" required placeholder="不要带括号"></label>
+        <label>颜色<input type="text" name="color" value="#FFFFFFCC"></label>
+        <label>跳转链接<input type="text" name="jump_url" placeholder="可留空"></label>
+        <label>排序<input type="text" name="sort_value" value="0"></label>
+        <label>类型
+            <select name="topic_type">
+                <option value="0">官方</option>
+                <option value="1">用户</option>
+            </select>
+        </label>
+        <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
+        <button type="submit">添加</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>推荐话题</h2>
+    {% if rows %}
+        <table>
+            <thead>
+            <tr><th>ID</th><th>话题名</th><th>颜色</th><th>跳转链接</th>
+                <th>排序</th><th>类型</th><th>状态</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+            {% for row in rows %}
+                <tr>
+                    <td>{{ row.id }}</td>
+                    <td>（{{ row.topic_name }}）</td>
+                    <td class="mono">{{ row.color }}</td>
+                    <td class="content mono">{{ row.jump_url }}</td>
+                    <td>{{ row.sort_value }}</td>
+                    <td>{{ "官方" if row.topic_type == 0 else "用户" }}</td>
+                    <td>{% if row.enabled %}<span class="tag">启用</span>{% else %}<span class="muted">停用</span>{% endif %}</td>
+                    <td class="actions">
+                        <details>
+                            <summary>编辑</summary>
+                            <form method="post" action="{{ url_for('dashboard.update_topic', topic_id=row.id) }}">
+                                <label>颜色<input type="text" name="color" value="{{ row.color }}"></label>
+                                <label>跳转链接<input type="text" name="jump_url" value="{{ row.jump_url }}"></label>
+                                <label>排序<input type="text" name="sort_value" value="{{ row.sort_value }}"></label>
+                                <label>类型
+                                    <select name="topic_type">
+                                        <option value="0" {% if row.topic_type == 0 %}selected{% endif %}>官方</option>
+                                        <option value="1" {% if row.topic_type == 1 %}selected{% endif %}>用户</option>
+                                    </select>
+                                </label>
+                                <input type="hidden" name="enabled" value="off">
+                                <label class="check"><input type="checkbox" name="enabled" value="on" {% if row.enabled %}checked{% endif %}> 启用</label>
+                                <button type="submit">保存</button>
+                            </form>
+                        </details>
+                        <form method="post" action="{{ url_for('dashboard.delete_topic', topic_id=row.id) }}"
+                              onsubmit="return confirm('确定删除该话题吗？');">
+                            <button type="submit" class="danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="muted">还没有推荐话题，客户端的小括号列表会是空的。</p>
+    {% endif %}
+</section>
+{% endblock %}

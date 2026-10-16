@@ -130,16 +130,38 @@ dashboard 的账号列表里点「封禁」即可。封禁后的行为：
 `GET /social-service/warmReminder/getWarmReminderConfig`、
 `GET /moment-service/topic/recommend/list`、`POST /social-service/inform/*`。
 
-### 图片上传（暂不支持）
+### 心情/状态模板
+
+发布页进入时会调用 `POST /moment/template`，把返回的 `resources` 全部写进
+本地 `moment_template` 表，之后心情列表（`type=0`）和状态列表（`type=1`）
+都从这张表读。所以后台 `/templates` 页就是这两个列表的数据源：
+
+* 每条模板必须有 `content` 和 `resource`，否则发布页会直接退出。
+* `resourceId` 是客户端 upsert 的主键，由后台自动递增，不要手工改重。
+* `resource` 支持填完整 url；从后台直接上传图标时存成 `media:<文件名>`，
+  下发时自动展开成 `<服务器地址>/media/<文件名>`。
+* 停用一条模板后它不再出现在下一次的 `resources` 里。
+
+`updateId` 按"增量拉取"语义实现：带 0 拉全量，带上次返回的 `updateId`
+只回传之后更新的行。
+
+### 小括号（话题）
+
+`GET /moment-service/topic/recommend/list` 返回两部分：
+
+* `config.maxTopicCount`：一条动态最多挂几个话题，客户端用它做数量校验；
+  `topicNameMaxLength` 是名称长度上限，颜色用于渲染。
+* `topicList`：后台 `/topics` 页配置的官方话题（`topicType=0`），外加
+  用户自己发过的话题（`topicType=1`），同名时官方配置优先。
+
+两者都在后台管理，改动立刻生效，不需要重启。
+
+### 图片上传
 
 `/moment/file/pic/transfer`、`/moment/file/pics/transfer`、
-`/moment/file/video/transfer` 现在会明确返回失败。
-
-原因：手表拿到 token 后是交给七牛 SDK 直接上传到七牛自己的域名，
-自有服务器没法用返回值把上传地址改过来。要让图片上传走本机，需要改客户端
-（比如替换 `MomentPhotoServeImpl.uploadPhoto` 的上传实现），这一步按你的要求没有动。
-
-文字动态、点赞、评论、话题这些不依赖云存储的路径已经完整可用。
+`/moment/file/video/transfer` 会签发指向本机 `/moment/file/upload` 的 token，
+文件落在 `MEDIA_DIR`，通过 `/media/<name>` 读回。客户端侧由
+`com.xtc.qiniu.SelfHostedUploader` 接管上传。
 
 ## 让手表指向这个服务器
 
@@ -167,14 +189,16 @@ python -m unittest discover -s tests -v
 app/
   __init__.py      应用工厂：建库、建管理员、注册蓝图、/media 路由
   config.py        配置（可用环境变量覆盖）
-  models.py        SQLAlchemy 模型：users / auth_tokens / moments / comments / likes
+  models.py        SQLAlchemy 模型：users / auth_tokens / moments / comments /
+                   likes / moment_templates / topics / settings
   api_common.py    响应信封、明文头解析、鉴权装饰器
   api.py           好友圈接口
   auth.py          登录 / 登出 / dashboard 会话
   dashboard.py     管理员后台
   serializers.py   模型 → 客户端 JSON
-  templates/       base / login / dashboard / moments
+  templates/       base / login / dashboard / moments / templates / topics
   static/          style.css
 run.py             启动入口
+seed.py            写入默认心情/状态模板与推荐话题
 tests/test_server.py
 ```

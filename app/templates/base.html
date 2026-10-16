@@ -12,6 +12,8 @@
     <nav>
         <a href="{{ url_for('dashboard.home') }}">用户</a>
         <a href="{{ url_for('dashboard.moments') }}">动态</a>
+        <a href="{{ url_for('dashboard.templates') }}">心情/状态</a>
+        <a href="{{ url_for('dashboard.topics') }}">小括号</a>
         {% if me %}
             <span class="who">{{ me.effective_name }}</span>
             <form method="post" action="{{ url_for('dashboard.logout') }}">

@@ -508,6 +508,113 @@ class MomentServerTest(unittest.TestCase):
         ).get_json()
         self.assertEqual(h5["data"], [])
 
+    def test_template_admin_feeds_the_mood_and_state_picker(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        headers = {"Base-Request-Param": base_param("admin")}
+
+        # Nothing configured yet: the picker would be empty.
+        empty = self.client.post(
+            "/moment/template", json={"from": 0, "size": 100, "updateId": 0}, headers=headers
+        ).get_json()["data"]
+        self.assertEqual(empty["resources"], [])
+        self.assertEqual(empty["total"], 0)
+
+        self.client.post(
+            "/templates/create",
+            data={
+                "type": "0",
+                "content": "今天真开心",
+                "resource": "https://example.com/happy.png",
+                "sort_value": "5",
+                "enabled": "on",
+            },
+        )
+        self.client.post(
+            "/templates/create",
+            data={
+                "type": "1",
+                "content": "正在学习",
+                "resource": "https://example.com/study.png",
+                "sort_value": "3",
+                "enabled": "on",
+            },
+        )
+
+        listing = self.client.post(
+            "/moment/template", json={"from": 0, "size": 100, "updateId": 0}, headers=headers
+        ).get_json()["data"]
+        self.assertEqual(listing["total"], 2)
+        by_type = {item["type"]: item for item in listing["resources"]}
+        self.assertEqual(by_type[0]["content"], "今天真开心")
+        self.assertEqual(by_type[1]["content"], "正在学习")
+        # The watch upserts on resourceId and refuses a template without both
+        # resource and content, so both must be present and distinct.
+        self.assertEqual(len({item["resourceId"] for item in listing["resources"]}), 2)
+        for item in listing["resources"]:
+            self.assertTrue(item["resource"])
+            self.assertTrue(item["content"])
+            self.assertGreater(item["updateTime"], 0)
+
+        incremental = self.client.post(
+            "/moment/template",
+            json={"from": 0, "size": 100, "updateId": listing["updateId"]},
+            headers=headers,
+        ).get_json()["data"]
+        self.assertEqual(incremental["resources"], [])
+
+        # A disabled template disappears from the list the watch caches.
+        template_id = by_type[0]["id"]
+        self.client.post(
+            f"/templates/{template_id}/update",
+            data={"type": "0", "content": "今天真开心", "resource": "https://example.com/happy.png",
+                  "enabled": "off"},
+        )
+        after = self.client.post(
+            "/moment/template", json={"from": 0, "size": 100, "updateId": 0}, headers=headers
+        ).get_json()["data"]
+        self.assertEqual(after["total"], 1)
+        self.assertEqual(after["resources"][0]["type"], 1)
+
+    def test_topic_admin_feeds_the_bracket_list(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        headers = {"Base-Request-Param": base_param("admin")}
+
+        empty = self.client.get("/moment-service/topic/recommend/list", headers=headers).get_json()["data"]
+        # Other tests in this class publish moments, so user topics may already
+        # exist; only the configured official list must start out empty.
+        self.assertEqual([t for t in empty["topicList"] if t["topicType"] == 0], [])
+        self.assertEqual(empty["config"]["maxTopicCount"], 2)
+
+        self.client.post("/topics/config", data={"max_topic_count": "3", "name_max_length": "16",
+                                                 "official_color": "#FFEEAA", "user_color": "#CCEEFF"})
+        self.client.post("/topics/create", data={"topic_name": "每日打卡", "color": "#FFEEAA",
+                                                 "sort_value": "10", "topic_type": "0", "enabled": "on"})
+        self.client.post("/topics/create", data={"topic_name": "我的周末", "color": "#FFEEAA",
+                                                 "sort_value": "5", "topic_type": "0", "enabled": "on"})
+
+        config = self.client.get("/moment-service/topic/recommend/list", headers=headers).get_json()["data"]
+        self.assertEqual(config["config"]["maxTopicCount"], 3)
+        self.assertEqual(config["config"]["topicNameMaxLength"], 16)
+        official = [topic for topic in config["topicList"] if topic["topicType"] == 0]
+        self.assertEqual([topic["topicName"] for topic in official], ["每日打卡", "我的周末"])
+        self.assertEqual(config["topicList"][0]["color"], "#FFEEAA")
+        self.assertEqual(config["topicList"][0]["topicType"], 0)
+
+        # A topic the user typed themselves is offered back as a user topic,
+        # without shadowing the configured official entry of the same name.
+        self.client.post(
+            "/moment/public",
+            json={"type": 3, "content": "hi", "topicList": [{"topicName": "每日打卡"}, {"topicName": "随手拍"}]},
+            headers=headers,
+        )
+        after = self.client.get("/moment-service/topic/recommend/list", headers=headers).get_json()["data"]
+        names = [topic["topicName"] for topic in after["topicList"]]
+        self.assertEqual(names.count("每日打卡"), 1)
+        self.assertIn("随手拍", names)
+        user_topic = next(topic for topic in after["topicList"] if topic["topicName"] == "随手拍")
+        self.assertEqual(user_topic["topicType"], 1)
+        self.assertEqual(user_topic["color"], "#CCEEFF")
+
     def test_banned_account_gets_the_suspend_envelope(self):
         self.client.post("/login", data={"username": "admin", "password": "admin123"})
         self.client.post(

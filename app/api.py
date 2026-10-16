@@ -15,8 +15,25 @@ from app.api_common import (
     fail,
     ok,
 )
-from app.models import Comment, Like, Moment, User, get_session, utcnow
-from app.serializers import serialize_comment, serialize_like, serialize_moment
+from app.models import (
+    Comment,
+    Like,
+    Moment,
+    MomentTemplate,
+    Topic,
+    User,
+    get_session,
+    get_setting,
+    millis,
+    utcnow,
+)
+from app.serializers import (
+    serialize_comment,
+    serialize_like,
+    serialize_moment,
+    serialize_template,
+    serialize_topic,
+)
 
 api = Blueprint("api", __name__)
 
@@ -362,8 +379,50 @@ def do_lbs_star():
 @api.post("/moment/template")
 @authenticate()
 def moment_template():
+    """心情/状态模板列表，对应客户端 ``DbTemplate``。
+
+    客户端进入发布页时会用 ``updateId=0`` 拉全量并写进本地
+    ``moment_template`` 表；带上 ``updateId`` 时只回传之后更新的行。
+    ``id`` 必须是每行唯一的正整数，因为客户端把它当作本地主键。
+    """
     payload = _body()
-    return ok({"resources": [], "total": 0, "updateId": int(payload.get("updateId") or 0)})
+    try:
+        update_id = int(payload.get("updateId") or 0)
+    except (TypeError, ValueError):
+        update_id = 0
+    session = get_session()
+    try:
+        rows = (
+            session.query(MomentTemplate)
+            .filter(MomentTemplate.enabled.is_(True))
+            .order_by(MomentTemplate.sort_value.desc(), MomentTemplate.id)
+            .all()
+        )
+        resources = []
+        for row in rows:
+            item = serialize_template(row)
+            item["resource"] = _absolute_resource(item["resource"])
+            resources.append(item)
+        newest = max((millis(row.update_time) for row in rows), default=0)
+        if update_id:
+            changed = [item for item in resources if item["updateTime"] > update_id]
+        else:
+            changed = resources
+        return ok({"resources": changed, "total": len(resources), "updateId": newest})
+    finally:
+        session.close()
+
+
+def _absolute_resource(value):
+    """Turn a stored ``media:<file>`` marker into a url the watch can load.
+
+    The dashboard writes icons as ``media:<file>`` because it has no request
+    context to build an absolute url from; the response is where the host is
+    known, so the expansion happens here.
+    """
+    if value and value.startswith("media:"):
+        return _media_url(value[len("media:"):])
+    return value
 
 
 @api.post("/moment/file/video/transfer")
@@ -586,9 +645,23 @@ def report_moment():
 @api.get("/moment-service/topic/recommend/list")
 @authenticate(required=False)
 def topic_recommend_list():
-    """Topic configuration plus the topics users have actually used."""
+    """话题推荐列表：后台配置的官方话题 + 用户已用过的话题。
+
+    客户端只用 ``config.maxTopicCount`` 限制一条动态能挂几个话题，
+    用 ``topicList`` 渲染可选列表，所以两者都必须非空。
+    """
     session = get_session()
     try:
+        official = (
+            session.query(Topic)
+            .filter(Topic.enabled.is_(True))
+            .order_by(Topic.sort_value.desc(), Topic.id)
+            .all()
+        )
+        seen = {topic.topic_name for topic in official}
+        topics = [serialize_topic(topic) for topic in official]
+
+        # Topics users typed themselves are offered back as user topics.
         counts = {}
         for (raw,) in session.query(Moment.topic_list_json).filter(Moment.deleted.is_(False)):
             if not raw:
@@ -603,23 +676,25 @@ def topic_recommend_list():
                 name = (entry or {}).get("topicName")
                 if name:
                     counts[name] = counts.get(name, 0) + 1
-        topics = [
-            {
-                "topicName": name,
-                "color": "#FFFFFFCC",
-                "jumpUrl": "",
-                "sortValue": count,
-                "topicType": 0,
-            }
-            for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-        ]
+        for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            if name in seen:
+                continue
+            topics.append(
+                {
+                    "topicName": name,
+                    "color": get_setting(session, "topic.userColor", "#FFFFFFCC"),
+                    "jumpUrl": "",
+                    "sortValue": count,
+                    "topicType": 1,
+                }
+            )
         return ok(
             {
                 "config": {
-                    "maxTopicCount": 2,
-                    "topicNameMaxLength": 12,
-                    "officialColor": "#FFFFFFCC",
-                    "userColor": "#FFFFFFCC",
+                    "maxTopicCount": int(get_setting(session, "topic.maxTopicCount", "2")),
+                    "topicNameMaxLength": int(get_setting(session, "topic.nameMaxLength", "12")),
+                    "officialColor": get_setting(session, "topic.officialColor", "#FFFFFFCC"),
+                    "userColor": get_setting(session, "topic.userColor", "#FFFFFFCC"),
                 },
                 "topicList": topics,
             }

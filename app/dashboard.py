@@ -1,6 +1,11 @@
 """Administration dashboard: sign in, add and manage watch accounts."""
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+import os
+import secrets
+from pathlib import Path
+
+from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
+from werkzeug.utils import secure_filename
 
 from app.api_common import normalize_chip_id
 from app.auth import (
@@ -15,9 +20,14 @@ from app.models import (
     Comment,
     Like,
     Moment,
+    MomentTemplate,
     ReviewRequest,
+    Setting,
+    Topic,
     User,
     get_session,
+    get_setting,
+    set_setting,
     utcnow,
 )
 
@@ -407,3 +417,225 @@ def moments():
         )
     finally:
         db.close()
+
+
+@dashboard.get("/templates")
+@login_required
+def templates():
+    """心情/状态模板管理：对应发布页的模板列表。"""
+    db = get_session()
+    try:
+        rows = (
+            db.query(MomentTemplate)
+            .order_by(MomentTemplate.type, MomentTemplate.sort_value.desc(), MomentTemplate.id)
+            .all()
+        )
+        return render_template("templates.html", rows=rows, me=current_user())
+    finally:
+        db.close()
+
+
+@dashboard.post("/templates/create")
+@login_required
+def create_template():
+    form = request.form
+    content = (form.get("content") or "").strip()
+    if not content:
+        flash("文案不能为空", "error")
+        return redirect(url_for("dashboard.templates"))
+    resource, error = _save_template_icon(request.files.get("icon"), form.get("resource"))
+    if error:
+        flash(error, "error")
+        return redirect(url_for("dashboard.templates"))
+    if not resource:
+        flash("心情/状态必须带一个图标，否则发布页会直接退出", "error")
+        return redirect(url_for("dashboard.templates"))
+    db = get_session()
+    try:
+        resource_id = _next_resource_id(db)
+        template = MomentTemplate(
+            type=int(form.get("type") or 0),
+            sub_type=int(form.get("sub_type") or 0),
+            content=content,
+            resource=resource,
+            resource_id=resource_id,
+            sort_value=int(form.get("sort_value") or 0),
+            enabled=_checkbox(form, "enabled", default=True),
+        )
+        db.add(template)
+        db.commit()
+        flash(f"已添加模板「{content}」", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.templates"))
+
+
+@dashboard.post("/templates/<int:template_id>/update")
+@login_required
+def update_template(template_id):
+    form = request.form
+    db = get_session()
+    try:
+        template = db.get(MomentTemplate, template_id)
+        if template is None:
+            flash("模板不存在", "error")
+            return redirect(url_for("dashboard.templates"))
+        resource, error = _save_template_icon(request.files.get("icon"), form.get("resource"))
+        if error:
+            flash(error, "error")
+            return redirect(url_for("dashboard.templates"))
+        template.content = (form.get("content") or "").strip() or template.content
+        template.type = int(form.get("type") or 0)
+        template.sub_type = int(form.get("sub_type") or 0)
+        template.sort_value = int(form.get("sort_value") or 0)
+        template.enabled = _checkbox(form, "enabled", default=True)
+        if resource:
+            template.resource = resource
+        template.update_time = utcnow()
+        db.commit()
+        flash("已保存模板", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.templates"))
+
+
+@dashboard.post("/templates/<int:template_id>/delete")
+@login_required
+def delete_template(template_id):
+    db = get_session()
+    try:
+        template = db.get(MomentTemplate, template_id)
+        if template is not None:
+            db.delete(template)
+            db.commit()
+            flash("已删除模板", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.templates"))
+
+
+def _next_resource_id(db):
+    """The watch upserts by ``resourceId``, so it must never repeat."""
+    largest = db.query(MomentTemplate).order_by(MomentTemplate.resource_id.desc()).first()
+    return (largest.resource_id if largest else 0) + 1
+
+
+def _save_template_icon(upload, resource_text):
+    """Store an uploaded icon (or a pasted url) and return the resource string.
+
+    ``media:<file>`` is expanded to a full url when the template list is
+    served, because only then is the request host known.
+    """
+    resource_text = (resource_text or "").strip()
+    if upload is None or not upload.filename:
+        return resource_text, None
+    suffix = Path(secure_filename(upload.filename)).suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        return None, "只支持 png/jpg/webp/gif 图标"
+    media_dir = Path(current_app.config["MEDIA_DIR"])
+    media_dir.mkdir(parents=True, exist_ok=True)
+    name = f"template_{secrets.token_hex(8)}{suffix}"
+    upload.save(os.fspath(media_dir / name))
+    return f"media:{name}", None
+
+
+@dashboard.get("/topics")
+@login_required
+def topics():
+    """「小括号」推荐话题与功能配置管理。"""
+    db = get_session()
+    try:
+        rows = db.query(Topic).order_by(Topic.sort_value.desc(), Topic.id).all()
+        config = {
+            "maxTopicCount": get_setting(db, "topic.maxTopicCount", "2"),
+            "nameMaxLength": get_setting(db, "topic.nameMaxLength", "12"),
+            "officialColor": get_setting(db, "topic.officialColor", "#FFFFFFCC"),
+            "userColor": get_setting(db, "topic.userColor", "#FFFFFFCC"),
+        }
+        return render_template("topics.html", rows=rows, config=config, me=current_user())
+    finally:
+        db.close()
+
+
+@dashboard.post("/topics/create")
+@login_required
+def create_topic():
+    form = request.form
+    name = (form.get("topic_name") or "").strip()
+    if not name:
+        flash("话题名不能为空", "error")
+        return redirect(url_for("dashboard.topics"))
+    db = get_session()
+    try:
+        if db.query(Topic).filter_by(topic_name=name).one_or_none() is not None:
+            flash(f"话题「{name}」已存在", "error")
+            return redirect(url_for("dashboard.topics"))
+        db.add(
+            Topic(
+                topic_name=name,
+                color=(form.get("color") or "#FFFFFFCC").strip(),
+                jump_url=(form.get("jump_url") or "").strip(),
+                sort_value=int(form.get("sort_value") or 0),
+                topic_type=int(form.get("topic_type") or 0),
+                enabled=_checkbox(form, "enabled", default=True),
+            )
+        )
+        db.commit()
+        flash(f"已添加话题「{name}」", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.topics"))
+
+
+@dashboard.post("/topics/<int:topic_id>/update")
+@login_required
+def update_topic(topic_id):
+    form = request.form
+    db = get_session()
+    try:
+        topic = db.get(Topic, topic_id)
+        if topic is None:
+            flash("话题不存在", "error")
+            return redirect(url_for("dashboard.topics"))
+        topic.color = (form.get("color") or topic.color).strip()
+        topic.jump_url = (form.get("jump_url") or "").strip()
+        topic.sort_value = int(form.get("sort_value") or 0)
+        topic.topic_type = int(form.get("topic_type") or 0)
+        topic.enabled = _checkbox(form, "enabled", default=True)
+        db.commit()
+        flash("已保存话题", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.topics"))
+
+
+@dashboard.post("/topics/<int:topic_id>/delete")
+@login_required
+def delete_topic(topic_id):
+    db = get_session()
+    try:
+        topic = db.get(Topic, topic_id)
+        if topic is not None:
+            db.delete(topic)
+            db.commit()
+            flash("已删除话题", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.topics"))
+
+
+@dashboard.post("/topics/config")
+@login_required
+def save_topic_config():
+    form = request.form
+    db = get_session()
+    try:
+        set_setting(db, "topic.maxTopicCount", max(int(form.get("max_topic_count") or 1), 1))
+        set_setting(db, "topic.nameMaxLength", max(int(form.get("name_max_length") or 1), 1))
+        set_setting(db, "topic.officialColor", (form.get("official_color") or "#FFFFFFCC").strip())
+        set_setting(db, "topic.userColor", (form.get("user_color") or "#FFFFFFCC").strip())
+        db.commit()
+        flash("已保存话题配置", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.topics"))

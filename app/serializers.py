@@ -70,6 +70,36 @@ def serialize_moment(moment):
     }
 
 
+def serialize_template(template):
+    """One ``DbTemplate`` row for ``POST /moment/template``.
+
+    Field names match the bean exactly: ``resource`` is what Glide loads (an
+    absolute url or ``local:<file>``) and ``resourceId`` is the upsert key the
+    watch uses when it writes the row into its local database.
+    """
+    return {
+        "id": template.id,
+        "type": template.type,
+        "subType": template.sub_type,
+        "content": template.content,
+        "resource": template.resource,
+        "resourceId": template.resource_id,
+        "createTime": millis(template.create_time),
+        "updateTime": millis(template.update_time),
+    }
+
+
+def serialize_topic(topic, sort_value=None):
+    """One ``TopicListBean`` for the recommend list."""
+    return {
+        "topicName": topic.topic_name,
+        "color": topic.color,
+        "jumpUrl": topic.jump_url,
+        "sortValue": topic.sort_value if sort_value is None else sort_value,
+        "topicType": topic.topic_type,
+    }
+
+
 def serialize_comment(comment):
     """One entry of ``SearchCommentResponse.comments``.
 

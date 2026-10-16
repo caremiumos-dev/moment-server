@@ -187,6 +187,78 @@ class ReviewRequest(Base):
     handled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
 
 
+class MomentTemplate(Base):
+    """A 心情/状态 template served by ``POST /moment/template``.
+
+    The watch caches every entry in its local ``moment_template`` table and
+    then lists the rows of one ``type`` on the mood/state picker, so each row
+    here maps one-to-one onto ``DbTemplate``.
+    """
+
+    __tablename__ = "moment_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # 0 = 心情, 1 = 状态, matching MoodOrStateActivity.TYPE_MOOD/TYPE_STATE.
+    type: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sub_type: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    content: Mapped[str] = mapped_column(Text, default="")
+    # Either an absolute url or ``local:<file>`` naming a file under MEDIA_DIR.
+    # The picker hides the icon when this is empty, but the publish page
+    # refuses to open a template without one, so it must not be blank.
+    resource: Mapped[str] = mapped_column(Text, default="")
+    # The watch upserts by this value, so it has to be unique per row.
+    resource_id: Mapped[int] = mapped_column(Integer, default=0, nullable=False, index=True)
+    sort_value: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
+    create_time: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    update_time: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class Topic(Base):
+    """A recommended 「小括号」 topic for ``/moment-service/topic/recommend/list``."""
+
+    __tablename__ = "topics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Stored without the 「（）」 brackets; the watch adds them for display.
+    topic_name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    color: Mapped[str] = mapped_column(String(16), default="#FFFFFFCC")
+    jump_url: Mapped[str] = mapped_column(String(256), default="")
+    sort_value: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    topic_type: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
+    create_time: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class Setting(Base):
+    """Key/value store for the few values the dashboard exposes.
+
+    Right now it holds the topic feature config (``maxTopicCount`` and the
+    name length limit) that ``/moment-service/topic/recommend/list`` sends to
+    the watch.
+    """
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+
+
+def get_setting(session, key, default=""):
+    """Read one setting, falling back to ``default`` when it was never set."""
+    row = session.get(Setting, key)
+    return row.value if row is not None else default
+
+
+def set_setting(session, key, value):
+    """Write one setting, inserting the row when it does not exist yet."""
+    row = session.get(Setting, key)
+    if row is None:
+        session.add(Setting(key=key, value=str(value)))
+    else:
+        row.value = str(value)
+
+
 engine = None
 SessionLocal = None
 

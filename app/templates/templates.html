@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}心情/状态 - 好友圈服务端{% endblock %}
+{% block content %}
+<section class="card">
+    <h2>新增心情/状态</h2>
+    <p class="muted">
+        客户端会把这些条目缓存在本地，发布页按「类型」筛选：0 为心情，1 为状态。
+        每条必须带图标，否则发布页会直接退出。
+    </p>
+    <form class="inline" method="post" action="{{ url_for('dashboard.create_template') }}"
+          enctype="multipart/form-data">
+        <label>类型
+            <select name="type">
+                <option value="0">心情</option>
+                <option value="1">状态</option>
+            </select>
+        </label>
+        <label>文案<input type="text" name="content" required placeholder="例如：今天真开心"></label>
+        <label>图标<input type="file" name="icon" accept="image/*"></label>
+        <label>图标地址<input type="text" name="resource" placeholder="留空则使用上传的图标"></label>
+        <label>子类型<input type="text" name="sub_type" value="0"></label>
+        <label>排序<input type="text" name="sort_value" value="0"></label>
+        <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
+        <button type="submit">添加</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>模板列表</h2>
+    {% if rows %}
+        <table>
+            <thead>
+            <tr>
+                <th>ID</th><th>类型</th><th>文案</th><th>图标</th>
+                <th>resourceId</th><th>排序</th><th>状态</th><th>操作</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for row in rows %}
+                <tr>
+                    <td>{{ row.id }}</td>
+                    <td>{{ "心情" if row.type == 0 else "状态" }}</td>
+                    <td class="content">{{ row.content }}</td>
+                    <td class="content mono">
+                        {% if row.resource.startswith("media:") %}
+                            <a href="{{ url_for('media', name=row.resource[6:]) }}" target="_blank">查看</a>
+                        {% elif row.resource %}
+                            {{ row.resource }}
+                        {% else %}
+                            <span class="tag tag-danger">缺失</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ row.resource_id }}</td>
+                    <td>{{ row.sort_value }}</td>
+                    <td>{% if row.enabled %}<span class="tag">启用</span>{% else %}<span class="muted">停用</span>{% endif %}</td>
+                    <td class="actions">
+                        <details>
+                            <summary>编辑</summary>
+                            <form method="post" action="{{ url_for('dashboard.update_template', template_id=row.id) }}"
+                                  enctype="multipart/form-data">
+                                <label>类型
+                                    <select name="type">
+                                        <option value="0" {% if row.type == 0 %}selected{% endif %}>心情</option>
+                                        <option value="1" {% if row.type == 1 %}selected{% endif %}>状态</option>
+                                    </select>
+                                </label>
+                                <label>文案<input type="text" name="content" value="{{ row.content }}"></label>
+                                <label>替换图标<input type="file" name="icon" accept="image/*"></label>
+                                <label>图标地址<input type="text" name="resource" value="{{ row.resource }}"></label>
+                                <label>子类型<input type="text" name="sub_type" value="{{ row.sub_type }}"></label>
+                                <label>排序<input type="text" name="sort_value" value="{{ row.sort_value }}"></label>
+                                <input type="hidden" name="enabled" value="off">
+                                <label class="check"><input type="checkbox" name="enabled" value="on" {% if row.enabled %}checked{% endif %}> 启用</label>
+                                <button type="submit">保存</button>
+                            </form>
+                        </details>
+                        <form method="post" action="{{ url_for('dashboard.delete_template', template_id=row.id) }}"
+                              onsubmit="return confirm('确定删除该模板吗？');">
+                            <button type="submit" class="danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p class="muted">还没有模板，发布页的心情/状态列表会是空的。</p>
+    {% endif %}
+</section>
+{% endblock %}
