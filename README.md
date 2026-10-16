@@ -46,18 +46,41 @@ python run.py
 }
 ```
 
+注意 `token` 字段里装的**不是**会话凭证，而是硬件芯片号
+`ro.boot.xtc.chipid`（见 `WatchDevice.getChipId()`，读不到时返回字面量 `unkown`）。
+它和 `mac`、`registId`、`deviceId` 一样属于设备标识；原厂真正用来验账号的是
+`accountId` 加上 `Eebbk-Sign` 签名，签名密钥来自服务端派发的 aesKey。
+
 服务端用 `accountId` 去 `users.watch_id` 里找账号：
 
 * 找不到或 token 失效 → `000003`
 * 账号被停用 → `000004`
+* 账号绑定了 chipId 但请求来自别的设备 → `000016`（与客户端
+  `HttpAuthManager.AUTH_ERROR_CODE` 一致，会触发重新鉴权）
 * 其余情况正常放行
+
+### chipId 设备绑定
+
+`users.chip_id` 为空表示"不限制设备"，此时任何知道 watchId 的手表都能用；
+服务端会顺手把最近一次见到的 chipId 记到 `users.last_chip_id`。
+在 dashboard 里：
+
+* 表格里 `未绑定（最近 xxx）` 时点「绑定该设备」，账号就锁定到那块表
+* 已绑定时点「解绑设备」恢复不限制
+* 新增/编辑账号也可以直接填 chipId；同一个 chipId 不能绑定给两个账号
+
+`unkown`（手表读不到芯片号时的兜底值）永远不会被记录成 `last_chip_id`，
+也不会在"未绑定"状态下参与校验 —— 否则所有读不到芯片号的手表会互相顶掉。
+但账号一旦绑定，`unkown` 同样通不过校验，等于该表暂时不可用；这时在 dashboard
+点「解绑设备」即可恢复。
 
 响应统一是 `{"code": "000001", "data": ..., "desc": "", "watchTips": ""}`，
 只有 `000001` 会被客户端的 `HttpRxJavaCallback` 当作成功。
 
 另外提供一套可选的可撤销 token：
 
-* `POST /moment/auth/login`，body `{"username": "...", "password": "..."}`，返回 `data.token`
+* `POST /moment/auth/login`，body `{"username": "...", "password": "..."}`，
+  可选再传 `chipId` 做设备校验；返回 `data.token`
 * 之后请求带 `authId: <token>` 头即可，不再需要 `Base-Request-Param`
 * `POST /moment/auth/logout` 撤销该 token
 

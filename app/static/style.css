@@ -86,6 +86,7 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: 500; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
+.muted { color: var(--muted); }
 .content { max-width: 320px; word-break: break-word; }
 
 .stats { display: flex; gap: 16px; margin-bottom: 20px; }

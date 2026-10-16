@@ -20,9 +20,11 @@ from functools import wraps
 
 from app.api_common import (
     ERROR_ACCOUNT_DISABLED,
+    ERROR_AUTH_FAILED,
     ERROR_INVALID_PARAM,
     ERROR_TOKEN_EXPIRED,
     fail,
+    normalize_chip_id,
     ok,
 )
 from app.models import AuthToken, User, get_session, utcnow
@@ -116,6 +118,11 @@ def watch_login():
             return fail(ERROR_INVALID_PARAM, "invalid username or password")
         if not user.is_active:
             return fail(ERROR_ACCOUNT_DISABLED, "account disabled")
+        chip_id = normalize_chip_id(payload.get("chipId"))
+        if user.chip_id and chip_id and chip_id != user.chip_id:
+            return fail(ERROR_AUTH_FAILED, "device does not match this account")
+        if not user.chip_id and chip_id and user.last_chip_id != chip_id:
+            user.last_chip_id = chip_id
         token = issue_token(db, user, device_id=payload.get("deviceId") or "")
         return ok(
             {

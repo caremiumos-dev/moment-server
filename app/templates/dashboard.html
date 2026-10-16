@@ -14,6 +14,7 @@
         <label>用户名<input type="text" name="username" required></label>
         <label>密码<input type="text" name="password" required></label>
         <label>watchId<input type="text" name="watch_id" required></label>
+        <label>chipId<input type="text" name="chip_id" placeholder="可留空"></label>
         <label>昵称<input type="text" name="display_name"></label>
         <label class="check"><input type="checkbox" name="is_admin"> 管理员</label>
         <label class="check"><input type="checkbox" name="is_active" checked> 启用</label>
@@ -27,7 +28,7 @@
         <thead>
         <tr>
             <th>ID</th><th>用户名</th><th>watchId</th><th>昵称</th>
-            <th>动态</th><th>评论</th><th>点赞</th><th>Token</th>
+            <th>chipId</th><th>动态</th><th>评论</th><th>点赞</th><th>Token</th>
             <th>状态</th><th>操作</th>
         </tr>
         </thead>
@@ -42,6 +43,15 @@
                 </td>
                 <td class="mono">{{ user.watch_id }}</td>
                 <td>{{ user.display_name }}</td>
+                <td class="mono">
+                    {% if user.chip_id %}
+                        {{ user.chip_id }}
+                    {% elif user.last_chip_id %}
+                        <span class="muted">未绑定（最近 {{ user.last_chip_id }}）</span>
+                    {% else %}
+                        <span class="muted">未绑定</span>
+                    {% endif %}
+                </td>
                 <td>{{ row.moment_count }}</td>
                 <td>{{ row.comment_count }}</td>
                 <td>{{ row.like_count }}</td>
@@ -53,6 +63,7 @@
                         <form method="post" action="{{ url_for('dashboard.update_user', user_id=user.id) }}">
                             <label>昵称<input type="text" name="display_name" value="{{ user.display_name }}"></label>
                             <label>新密码<input type="text" name="password" placeholder="留空不修改"></label>
+                            <label>chipId<input type="text" name="chip_id" value="{{ user.chip_id }}" placeholder="留空 = 不限制设备"></label>
                             <input type="hidden" name="is_admin" value="off">
                             <label class="check"><input type="checkbox" name="is_admin" value="on" {% if user.is_admin %}checked{% endif %}> 管理员</label>
                             <input type="hidden" name="is_active" value="off">
@@ -66,6 +77,15 @@
                     <form method="post" action="{{ url_for('dashboard.revoke_user_tokens', user_id=user.id) }}">
                         <button type="submit">撤销 token</button>
                     </form>
+                    {% if user.chip_id %}
+                        <form method="post" action="{{ url_for('dashboard.unbind_chip', user_id=user.id) }}">
+                            <button type="submit">解绑设备</button>
+                        </form>
+                    {% elif user.last_chip_id %}
+                        <form method="post" action="{{ url_for('dashboard.bind_seen_chip', user_id=user.id) }}">
+                            <button type="submit">绑定该设备</button>
+                        </form>
+                    {% endif %}
                     <form method="post" action="{{ url_for('dashboard.delete_user', user_id=user.id) }}"
                           onsubmit="return confirm('删除账号会同时删除其动态和评论，确定吗？');">
                         <button type="submit" class="danger">删除</button>

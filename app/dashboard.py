@@ -2,6 +2,7 @@
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 
+from app.api_common import normalize_chip_id
 from app.auth import (
     current_user,
     end_session,
@@ -114,10 +115,15 @@ def create_user():
         if db.query(User).filter_by(watch_id=watch_id).one_or_none() is not None:
             flash(f"watchId {watch_id} 已被占用", "error")
             return redirect(url_for("dashboard.home"))
+        chip_id = normalize_chip_id(form.get("chip_id"))
+        if chip_id and db.query(User).filter(User.chip_id == chip_id).one_or_none() is not None:
+            flash(f"chipId {chip_id} 已绑定给其它账号", "error")
+            return redirect(url_for("dashboard.home"))
         user = User(
             username=username,
             watch_id=watch_id,
             display_name=display_name,
+            chip_id=chip_id,
             is_admin=_checkbox(form, "is_admin"),
             is_active=_checkbox(form, "is_active", default=True),
         )
@@ -144,6 +150,20 @@ def update_user(user_id):
         new_password = form.get("password") or ""
         if new_password:
             user.set_password(new_password)
+        # Binding a chip id pins the account to one watch; an empty value means
+        # "any device that presents this watch id is accepted".
+        if "chip_id" in form:
+            chip_id = normalize_chip_id(form.get("chip_id"))
+            if chip_id:
+                clash = (
+                    db.query(User)
+                    .filter(User.chip_id == chip_id, User.id != user.id)
+                    .one_or_none()
+                )
+                if clash is not None:
+                    flash(f"chipId {chip_id} 已绑定给 {clash.username}", "error")
+                    return redirect(url_for("dashboard.home"))
+            user.chip_id = chip_id
         # The template submits hidden "off" values first, so an unchecked box
         # still reaches us and can actually revoke the flag.
         if "is_admin" in form:
@@ -191,6 +211,52 @@ def revoke_user_tokens(user_id):
         else:
             count = revoke_tokens(db, user)
             flash(f"已撤销 {user.username} 的 {count} 个 token", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.home"))
+
+
+@dashboard.post("/users/<int:user_id>/bind-seen-chip")
+@login_required
+def bind_seen_chip(user_id):
+    """Bind the most recent chip id this account was seen with."""
+    db = get_session()
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            flash("账号不存在", "error")
+        elif not user.last_chip_id:
+            flash(f"{user.username} 还没有上报过 chipId", "error")
+        else:
+            clash = (
+                db.query(User)
+                .filter(User.chip_id == user.last_chip_id, User.id != user.id)
+                .one_or_none()
+            )
+            if clash is not None:
+                flash(f"chipId {user.last_chip_id} 已绑定给 {clash.username}", "error")
+            else:
+                user.chip_id = user.last_chip_id
+                db.commit()
+                flash(f"已把 {user.username} 绑定到 {user.chip_id}", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.home"))
+
+
+@dashboard.post("/users/<int:user_id>/unbind-chip")
+@login_required
+def unbind_chip(user_id):
+    """Drop the chip-id binding so the account works on any watch again."""
+    db = get_session()
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            flash("账号不存在", "error")
+        else:
+            user.chip_id = ""
+            db.commit()
+            flash(f"已解除 {user.username} 的设备绑定", "ok")
     finally:
         db.close()
     return redirect(url_for("dashboard.home"))

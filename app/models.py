@@ -9,7 +9,9 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    inspect,
     String,
+    text,
     Text,
     UniqueConstraint,
     create_engine,
@@ -50,6 +52,13 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     watch_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(64), default="")
+    # Hardware chip id (``ro.boot.xtc.chipid``), which the client sends as the
+    # ``token`` field of Base-Request-Param.  Empty means "not bound yet", in
+    # which case any device presenting this watch id is accepted.
+    chip_id: Mapped[str] = mapped_column(String(64), default="", server_default="", nullable=False)
+    # The last chip id we saw for this account, so an admin can bind it with one
+    # click instead of typing a value they cannot easily read off the watch.
+    last_chip_id: Mapped[str] = mapped_column(String(64), default="", server_default="", nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
@@ -159,6 +168,31 @@ class Like(Base):
 engine = None
 SessionLocal = None
 
+# Columns added after the first release.  ``create_all`` only creates missing
+# tables, so an existing database needs these added explicitly.
+ADDED_COLUMNS = {
+    "users": {
+        "chip_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "last_chip_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+    },
+    "comments": {
+        "parent_id": "INTEGER",
+    },
+}
+
+
+def _upgrade_schema(connection) -> None:
+    """Add columns that were introduced after a database was first created."""
+    inspector = inspect(connection)
+    existing_tables = set(inspector.get_table_names())
+    for table, columns in ADDED_COLUMNS.items():
+        if table not in existing_tables:
+            continue
+        present = {column["name"] for column in inspector.get_columns(table)}
+        for name, ddl in columns.items():
+            if name not in present:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
 
 def init_engine(database_url: str) -> None:
     """Create the engine/session factory and the schema."""
@@ -166,6 +200,8 @@ def init_engine(database_url: str) -> None:
     engine = create_engine(database_url, future=True)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        _upgrade_schema(connection)
 
 
 def get_session():

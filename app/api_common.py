@@ -18,9 +18,24 @@ ERROR_TOKEN_EXPIRED = "000003"
 ERROR_ACCOUNT_DISABLED = "000004"
 ERROR_NOT_FOUND = "000005"
 ERROR_FORBIDDEN = "000006"
+# ``HttpAuthManager.AUTH_ERROR_CODE``: the client broadcasts "auth failed" and
+# the launcher re-authenticates the watch.
+ERROR_AUTH_FAILED = "000016"
 
 BASE_REQUEST_PARAM_HEADER = "Base-Request-Param"
 AUTH_ID_HEADER = "authId"
+
+# ``WatchDevice.getChipId()`` falls back to this literal when
+# ``ro.boot.xtc.chipid`` is unreadable, so it must not be treated as an identity.
+UNKNOWN_CHIP_ID = "unkown"
+
+
+def normalize_chip_id(value):
+    """Return the chip id, or ``""`` when the client could not read one."""
+    text = (value or "").strip()
+    if not text or text.lower() == UNKNOWN_CHIP_ID:
+        return ""
+    return text
 
 
 def ok(data=None, desc=""):
@@ -64,7 +79,8 @@ def request_identity():
         "account_id": account_id,
         "device_id": param.get("deviceId", ""),
         "mac": param.get("mac", ""),
-        "token": param.get("token", ""),
+        # ``token`` is the hardware chip id, not a session token.
+        "chip_id": normalize_chip_id(param.get("token")),
         "raw": param,
     }
 
@@ -87,6 +103,17 @@ def authenticate(required=True):
                     if user is not None:
                         if not user.is_active:
                             return fail(ERROR_ACCOUNT_DISABLED, "account disabled")
+                        chip_id = g.identity["chip_id"]
+                        if user.chip_id:
+                            # Bound account: only the registered watch may use it.
+                            if chip_id != user.chip_id:
+                                return fail(ERROR_AUTH_FAILED, "device does not match this account")
+                        elif chip_id:
+                            # Unbound: remember the first device so the admin can
+                            # bind it from the dashboard with one click.
+                            if user.last_chip_id != chip_id:
+                                user.last_chip_id = chip_id
+                                session.commit()
                         g.current_user = user
                 if g.current_user is None:
                     token_value = request.headers.get(AUTH_ID_HEADER)

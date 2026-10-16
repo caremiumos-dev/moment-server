@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app import create_app  # noqa: E402
 
 
-def base_param(watch_id, device_id="dev-1"):
+def base_param(watch_id, device_id="dev-1", chip_id="chip-1"):
     """The plaintext identity header the watch client sends."""
     return json.dumps(
         {
@@ -27,7 +27,7 @@ def base_param(watch_id, device_id="dev-1"):
             "registId": 1,
             "requestId": "req-1",
             "timestamp": "2026-10-16 12:00:00",
-            "token": "chip-1",
+            "token": chip_id,
         }
     )
 
@@ -272,6 +272,92 @@ class MomentServerTest(unittest.TestCase):
         ).get_json()["data"]
         self.assertEqual(page["totalCount"], 2)
         self.assertEqual(page["totalPage"], 1)
+
+    def test_bound_account_rejects_other_devices(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={
+                "username": "bound",
+                "password": "pw",
+                "watch_id": "W6006",
+                "chip_id": "CHIP-AAA",
+                "is_active": "on",
+            },
+        )
+        # The bound watch is accepted.
+        ok_response = self.client.post(
+            "/moment/search",
+            json={},
+            headers={"Base-Request-Param": base_param("W6006", chip_id="CHIP-AAA")},
+        ).get_json()
+        self.assertEqual(ok_response["code"], "000001")
+        # Any other chip id is rejected with the client's auth-error code.
+        bad_response = self.client.post(
+            "/moment/search",
+            json={},
+            headers={"Base-Request-Param": base_param("W6006", chip_id="CHIP-BBB")},
+        ).get_json()
+        self.assertEqual(bad_response["code"], "000016")
+
+    def test_unbound_account_remembers_last_chip_id(self):
+        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.client.post(
+            "/users/create",
+            data={"username": "loose", "password": "pw", "watch_id": "W7007", "is_active": "on"},
+        )
+        headers = {"Base-Request-Param": base_param("W7007", chip_id="CHIP-SEEN")}
+        listed = self.client.post("/moment/search", json={}, headers=headers).get_json()
+        self.assertEqual(listed["code"], "000001")
+
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            user = db.query(User).filter_by(watch_id="W7007").one()
+            self.assertEqual(user.chip_id, "")
+            self.assertEqual(user.last_chip_id, "CHIP-SEEN")
+            user_id = user.id
+            db.close()
+
+        # "unknown" is what WatchDevice reports when the property is unreadable,
+        # so it must not be stored as an identity.
+        self.client.post(
+            "/moment/search",
+            json={},
+            headers={"Base-Request-Param": base_param("W7007", chip_id="unkown")},
+        )
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            user = db.get(User, user_id)
+            self.assertEqual(user.last_chip_id, "CHIP-SEEN")
+            db.close()
+
+        # Binding the seen chip id locks the account to that watch.
+        self.client.post(f"/users/{user_id}/bind-seen-chip")
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            self.assertEqual(db.get(User, user_id).chip_id, "CHIP-SEEN")
+            db.close()
+        rejected = self.client.post(
+            "/moment/search",
+            json={},
+            headers={"Base-Request-Param": base_param("W7007", chip_id="CHIP-OTHER")},
+        ).get_json()
+        self.assertEqual(rejected["code"], "000016")
+
+        # Unbinding restores access for any device.
+        self.client.post(f"/users/{user_id}/unbind-chip")
+        accepted = self.client.post(
+            "/moment/search",
+            json={},
+            headers={"Base-Request-Param": base_param("W7007", chip_id="CHIP-OTHER")},
+        ).get_json()
+        self.assertEqual(accepted["code"], "000001")
 
 
 if __name__ == "__main__":
