@@ -1,0 +1,39 @@
+services:
+  moment:
+    build:
+      context: .
+      args:
+        # Configurable through .env; see .env.example.
+        APT_MIRROR: ${APT_MIRROR:-deb.debian.org}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+    image: moment-server:local
+    container_name: moment-server
+    restart: unless-stopped
+    env_file:
+      # Optional: docker compose only requires the file when it exists.
+      - path: .env
+        required: false
+    environment:
+      # Keep these pinned to the mounted volume; .env should not override them.
+      MOMENT_DATABASE_URL: sqlite:////data/moment.db
+      MOMENT_MEDIA_DIR: /data/media
+    ports:
+      # Bind to all interfaces so a watch on the LAN can reach it.  Change to
+      # "127.0.0.1:8000:8000" if you always front it with a reverse proxy.
+      - "8000:8000"
+    volumes:
+      - moment-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  moment-data:

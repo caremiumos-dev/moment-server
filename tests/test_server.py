@@ -49,10 +49,60 @@ class MomentServerTest(unittest.TestCase):
     def setUp(self):
         self.client = self.app.test_client()
 
+    def post_form(self, path, data=None, **kwargs):
+        """Submit a dashboard form with the CSRF token the guard requires."""
+        with self.client.session_transaction() as session:
+            token = session.get("csrf_token")
+        if not token:
+            # Any dashboard GET populates the session token.
+            self.client.get("/login")
+            with self.client.session_transaction() as session:
+                token = session.get("csrf_token")
+        payload = dict(data or {})
+        payload.setdefault("csrf_token", token)
+        return self.client.post(path, data=payload, **kwargs)
+
     def test_health(self):
         response = self.client.get("/healthz")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["status"], "ok")
+
+    def test_readiness_checks_the_database(self):
+        response = self.client.get("/readyz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "ok")
+
+    def test_production_refuses_the_default_secret(self):
+        # Call the guard directly: building a whole app here would replace the
+        # module-level engine the other tests share.
+        from flask import Flask
+
+        from app import _check_secret
+
+        probe = Flask(__name__)
+        probe.config.update(
+            {"SECRET_KEY": "moment-dev-secret-change-me", "ALLOW_INSECURE_DEFAULTS": False}
+        )
+        with self.assertRaises(RuntimeError):
+            _check_secret(probe)
+
+        probe.config["SECRET_KEY"] = "a-real-production-secret"
+        _check_secret(probe)  # must not raise
+
+    def test_dashboard_posts_require_csrf_token(self):
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        # A valid session without the token is still rejected.
+        response = self.client.post(
+            "/users/create",
+            data={"username": "no-csrf", "password": "pw", "watch_id": "WCSRF"},
+        )
+        self.assertEqual(response.status_code, 400)
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            self.assertIsNone(db.query(User).filter_by(username="no-csrf").one_or_none())
+            db.close()
 
     def test_dashboard_login_page(self):
         response = self.client.get("/login")
@@ -69,14 +119,12 @@ class MomentServerTest(unittest.TestCase):
 
     def test_admin_creates_user_then_client_can_post(self):
         # 1. Sign in to the dashboard with the bootstrap administrator.
-        login = self.client.post(
-            "/login", data={"username": "admin", "password": "admin123"}, follow_redirects=True
+        login = self.post_form("/login", data={"username": "admin", "password": "admin123"}, follow_redirects=True
         )
         self.assertEqual(login.status_code, 200)
 
         # 2. Add a watch account.
-        created = self.client.post(
-            "/users/create",
+        created = self.post_form("/users/create",
             data={
                 "username": "kid",
                 "password": "kid-pass",
@@ -137,9 +185,8 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(topics["data"]["topicList"][0]["topicName"], "周末")
 
     def test_disabled_account_is_locked_out(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={
                 "username": "blocked",
                 "password": "pw",
@@ -155,7 +202,7 @@ class MomentServerTest(unittest.TestCase):
             user = db.query(User).filter_by(watch_id="W2002").one()
             user_id = user.id
             db.close()
-        self.client.post(f"/users/{user_id}/toggle", follow_redirects=True)
+        self.post_form(f"/users/{user_id}/toggle", follow_redirects=True)
 
         response = self.client.post(
             "/moment/search",
@@ -180,9 +227,8 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(listed["code"], "000001")
 
     def test_edit_user_can_revoke_admin_and_disable(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={
                 "username": "editor",
                 "password": "pw",
@@ -199,8 +245,7 @@ class MomentServerTest(unittest.TestCase):
             db.close()
 
         # Unchecking the boxes must actually clear the flags.
-        self.client.post(
-            f"/users/{user_id}/update",
+        self.post_form(f"/users/{user_id}/update",
             data={"display_name": "改名", "is_admin": "off", "is_active": "off"},
         )
         with self.app.app_context():
@@ -214,9 +259,8 @@ class MomentServerTest(unittest.TestCase):
             db.close()
 
     def test_delete_moment_hides_it_from_the_feed(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "poster", "password": "pw", "watch_id": "W4004", "is_active": "on"},
         )
         headers = {"Base-Request-Param": base_param("W4004")}
@@ -230,7 +274,7 @@ class MomentServerTest(unittest.TestCase):
             db = get_session()
             moment_pk = db.query(Moment).filter_by(moment_id=published["momentId"]).one().id
             db.close()
-        self.client.post(f"/moments/{moment_pk}/delete")
+        self.post_form(f"/moments/{moment_pk}/delete")
 
         listed = self.client.post(
             "/moment/search", json={"size": 50}, headers=headers
@@ -240,9 +284,8 @@ class MomentServerTest(unittest.TestCase):
         )
 
     def test_reply_marks_comment_as_reply(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "talker", "password": "pw", "watch_id": "W5005", "is_active": "on"},
         )
         headers = {"Base-Request-Param": base_param("W5005")}
@@ -274,9 +317,8 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(page["totalPage"], 1)
 
     def test_bound_account_rejects_other_devices(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={
                 "username": "bound",
                 "password": "pw",
@@ -301,9 +343,8 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(bad_response["code"], "000016")
 
     def test_unbound_account_remembers_last_chip_id(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "loose", "password": "pw", "watch_id": "W7007", "is_active": "on"},
         )
         headers = {"Base-Request-Param": base_param("W7007", chip_id="CHIP-SEEN")}
@@ -336,7 +377,7 @@ class MomentServerTest(unittest.TestCase):
             db.close()
 
         # Binding the seen chip id locks the account to that watch.
-        self.client.post(f"/users/{user_id}/bind-seen-chip")
+        self.post_form(f"/users/{user_id}/bind-seen-chip")
         with self.app.app_context():
             from app.models import User, get_session
 
@@ -351,7 +392,7 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(rejected["code"], "000016")
 
         # Unbinding restores access for any device.
-        self.client.post(f"/users/{user_id}/unbind-chip")
+        self.post_form(f"/users/{user_id}/unbind-chip")
         accepted = self.client.post(
             "/moment/search",
             json={},
@@ -361,9 +402,8 @@ class MomentServerTest(unittest.TestCase):
 
     def test_photo_upload_round_trip(self):
         """Token request -> upload -> download url -> fetch the bytes back."""
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "shooter", "password": "pw", "watch_id": "W8008", "is_active": "on"},
         )
         headers = {"Base-Request-Param": base_param("W8008")}
@@ -406,9 +446,8 @@ class MomentServerTest(unittest.TestCase):
         fetched.close()
 
     def test_photo_upload_batch_and_path_traversal(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "batch", "password": "pw", "watch_id": "W9009", "is_active": "on"},
         )
         headers = {"Base-Request-Param": base_param("W9009")}
@@ -431,9 +470,8 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(escaped["code"], "000002")
 
     def test_video_transfer_returns_both_keys(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "filmer", "password": "pw", "watch_id": "W1010", "is_active": "on"},
         )
         headers = {"Base-Request-Param": base_param("W1010")}
@@ -449,9 +487,8 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(data["iconUploadToken"], f"local:{data['icon']['key']}")
 
     def test_extra_endpoints_used_by_the_personal_page(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "personal", "password": "pw", "watch_id": "W1111", "is_active": "on"},
         )
         headers = {"Base-Request-Param": base_param("W1111")}
@@ -509,7 +546,7 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(h5["data"], [])
 
     def test_template_admin_feeds_the_mood_and_state_picker(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
         headers = {"Base-Request-Param": base_param("admin")}
 
         # Nothing configured yet: the picker would be empty.
@@ -519,8 +556,7 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(empty["resources"], [])
         self.assertEqual(empty["total"], 0)
 
-        self.client.post(
-            "/templates/create",
+        self.post_form("/templates/create",
             data={
                 "type": "0",
                 "content": "今天真开心",
@@ -529,8 +565,7 @@ class MomentServerTest(unittest.TestCase):
                 "enabled": "on",
             },
         )
-        self.client.post(
-            "/templates/create",
+        self.post_form("/templates/create",
             data={
                 "type": "1",
                 "content": "正在学习",
@@ -564,8 +599,7 @@ class MomentServerTest(unittest.TestCase):
 
         # A disabled template disappears from the list the watch caches.
         template_id = by_type[0]["id"]
-        self.client.post(
-            f"/templates/{template_id}/update",
+        self.post_form(f"/templates/{template_id}/update",
             data={"type": "0", "content": "今天真开心", "resource": "https://example.com/happy.png",
                   "enabled": "off"},
         )
@@ -576,7 +610,7 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(after["resources"][0]["type"], 1)
 
     def test_topic_admin_feeds_the_bracket_list(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
         headers = {"Base-Request-Param": base_param("admin")}
 
         empty = self.client.get("/moment-service/topic/recommend/list", headers=headers).get_json()["data"]
@@ -585,11 +619,11 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual([t for t in empty["topicList"] if t["topicType"] == 0], [])
         self.assertEqual(empty["config"]["maxTopicCount"], 2)
 
-        self.client.post("/topics/config", data={"max_topic_count": "3", "name_max_length": "16",
+        self.post_form("/topics/config", data={"max_topic_count": "3", "name_max_length": "16",
                                                  "official_color": "#FFEEAA", "user_color": "#CCEEFF"})
-        self.client.post("/topics/create", data={"topic_name": "每日打卡", "color": "#FFEEAA",
+        self.post_form("/topics/create", data={"topic_name": "每日打卡", "color": "#FFEEAA",
                                                  "sort_value": "10", "topic_type": "0", "enabled": "on"})
-        self.client.post("/topics/create", data={"topic_name": "我的周末", "color": "#FFEEAA",
+        self.post_form("/topics/create", data={"topic_name": "我的周末", "color": "#FFEEAA",
                                                  "sort_value": "5", "topic_type": "0", "enabled": "on"})
 
         config = self.client.get("/moment-service/topic/recommend/list", headers=headers).get_json()["data"]
@@ -616,9 +650,8 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(user_topic["color"], "#CCEEFF")
 
     def test_banned_account_gets_the_suspend_envelope(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "banned", "password": "pw", "watch_id": "W1212", "is_active": "on"},
         )
         with self.app.app_context():
@@ -635,7 +668,7 @@ class MomentServerTest(unittest.TestCase):
             "000001",
         )
 
-        self.client.post(f"/users/{user_id}/ban")
+        self.post_form(f"/users/{user_id}/ban")
         # Every authenticated call now answers 000007 with the exact strings the
         # watch matches on when it shows the "account suspended" prompt.
         for path in ["/moment/search", "/moment/public", "/moment/isBannedToPost"]:
@@ -653,9 +686,8 @@ class MomentServerTest(unittest.TestCase):
         )
 
     def test_banned_account_cannot_log_in(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "noluck", "password": "pw", "watch_id": "W1313", "is_active": "on"},
         )
         with self.app.app_context():
@@ -664,7 +696,7 @@ class MomentServerTest(unittest.TestCase):
             db = get_session()
             user_id = db.query(User).filter_by(watch_id="W1313").one().id
             db.close()
-        self.client.post(f"/users/{user_id}/ban")
+        self.post_form(f"/users/{user_id}/ban")
 
         login = self.client.post(
             "/moment/auth/login", json={"username": "noluck", "password": "pw"}
@@ -673,9 +705,8 @@ class MomentServerTest(unittest.TestCase):
         self.assertEqual(login["watchTips"], "Your account has been suspend")
 
     def test_unban_restores_access(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "temp", "password": "pw", "watch_id": "W1414", "is_active": "on"},
         )
         with self.app.app_context():
@@ -686,21 +717,20 @@ class MomentServerTest(unittest.TestCase):
             db.close()
 
         headers = {"Base-Request-Param": base_param("W1414")}
-        self.client.post(f"/users/{user_id}/ban")
+        self.post_form(f"/users/{user_id}/ban")
         self.assertEqual(
             self.client.post("/moment/search", json={}, headers=headers).get_json()["code"],
             "000007",
         )
-        self.client.post(f"/users/{user_id}/unban")
+        self.post_form(f"/users/{user_id}/unban")
         self.assertEqual(
             self.client.post("/moment/search", json={}, headers=headers).get_json()["code"],
             "000001",
         )
 
     def test_review_request_is_recorded_and_visible(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "appealer", "password": "pw", "watch_id": "W1515", "is_active": "on"},
         )
         with self.app.app_context():
@@ -709,7 +739,7 @@ class MomentServerTest(unittest.TestCase):
             db = get_session()
             user_id = db.query(User).filter_by(watch_id="W1515").one().id
             db.close()
-        self.client.post(f"/users/{user_id}/ban")
+        self.post_form(f"/users/{user_id}/ban")
 
         # A banned account can still file an appeal: this endpoint is the whole
         # reason the dialog exists, so it must not answer 000007.
@@ -736,7 +766,7 @@ class MomentServerTest(unittest.TestCase):
         # The dashboard lists it and can mark it handled.
         page = self.client.get("/dashboard")
         self.assertIn("我没有违规", page.get_data(as_text=True))
-        self.client.post(f"/reviews/{review_id}/handled")
+        self.post_form(f"/reviews/{review_id}/handled")
         with self.app.app_context():
             from app.models import ReviewRequest, get_session
 
@@ -746,9 +776,8 @@ class MomentServerTest(unittest.TestCase):
         self.assertNotIn("我没有违规", self.client.get("/dashboard").get_data(as_text=True))
 
     def test_dashboard_renders_the_ban_controls(self):
-        self.client.post("/login", data={"username": "admin", "password": "admin123"})
-        self.client.post(
-            "/users/create",
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form("/users/create",
             data={"username": "shown", "password": "pw", "watch_id": "W1616", "is_active": "on"},
         )
         page = self.client.get("/dashboard").get_data(as_text=True)
@@ -756,7 +785,7 @@ class MomentServerTest(unittest.TestCase):
         # confirm(), and the modal carries the exact text the watch shows.
         self.assertIn("data-ban-form", page)
         self.assertIn('id="banned-modal"', page)
-        self.assertIn("你的账户已被封禁", page)
+        self.assertIn("封禁通知", page)
         self.assertIn("申请复核", page)
         self.assertIn("下载您所发布过的动态", page)
         self.assertIn("banned.js", page)
@@ -768,7 +797,7 @@ class MomentServerTest(unittest.TestCase):
             db = get_session()
             user_id = db.query(User).filter_by(watch_id="W1616").one().id
             db.close()
-        self.client.post(f"/users/{user_id}/ban")
+        self.post_form(f"/users/{user_id}/ban")
         page = self.client.get("/dashboard").get_data(as_text=True)
         self.assertIn("已封禁", page)
         self.assertIn("解除封禁", page)

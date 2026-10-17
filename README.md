@@ -1,10 +1,67 @@
 # 好友圈自有部署服务端
 
-用 Flask 重写的 `com.xtc.moment` 后端，供自用测试。当前版本**只接受不加密的请求**：
+用 Flask 重写的 `com.xtc.moment` 后端，可用于小规模自建部署。当前版本**只接受不加密的请求**：
 手表把身份信息放在明文 `Base-Request-Param` 请求头里，服务端直接读这个头完成鉴权，
 不涉及任何加解密逻辑。账号可以在自带的 dashboard 里添加和管理。
 
-## 快速开始
+## Docker 部署（推荐）
+
+```bash
+cp .env.example .env
+# 编辑 .env：至少改 MOMENT_SECRET_KEY 和 MOMENT_ADMIN_PASSWORD
+docker compose up -d --build
+docker compose ps          # 等到 STATUS 显示 healthy
+```
+
+服务监听宿主机 `8000` 端口，数据（SQLite 库 + 上传的图片/视频）保存在
+`moment-data` 命名卷里，容器重建不会丢。日志直接进 stdout：
+
+```bash
+docker compose logs -f --tail 100
+```
+
+镜像基于 `python:3.12-slim`，用 gunicorn（2 worker × 4 thread）跑，
+以非 root 用户 `moment` 运行，带 `/healthz`、`/readyz` 健康检查。
+`MOMENT_SEED_DEFAULTS=true` 时首次启动会写入默认心情/状态模板和推荐话题。
+
+构建阶段的 APT/PyPI 源可以在 `.env` 里换（默认阿里云）：
+
+```dotenv
+APT_MIRROR=mirrors.aliyun.com
+PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+```
+
+`APT_MIRROR` 也接受完整地址（如 `https://mirrors.tuna.tsinghua.edu.cn`）；
+`PIP_INDEX_URL` 留空则使用 pypi.org。改完重新 `docker compose build`。
+
+### 生产环境注意事项
+
+* **必须**改掉 `MOMENT_SECRET_KEY`。仍为默认值时，生产入口会直接拒绝启动。
+* 用 `docker compose up -d --build` 部署后，`admin` 的密码只用于建库那一次，
+  请先在 `.env` 改好再启动。
+* 直接暴露在公网时，建议前面加一层 HTTPS 反代（nginx/Caddy），并设置
+  `MOMENT_SECURE_COOKIES=true`、`MOMENT_PROXY_COUNT=1`、`MOMENT_PUBLIC_BASE_URL`。
+* 服务端目前只支持明文请求；如果客户端开了加密，本服务无法解析。
+* dashboard 的所有写操作都有 CSRF 校验，会话 cookie 为 HttpOnly + SameSite=Lax。
+* 备份：
+
+  ```bash
+  ./scripts/backup.sh /path/to/backups
+  ```
+
+  会生成包含数据库快照和 media 的 tar.gz；用的是 sqlite `.backup`，
+  服务运行中也能得到一致快照。
+
+### 常用运维命令
+
+```bash
+docker compose restart          # 重启
+docker compose pull && docker compose up -d --build   # 升级
+docker compose exec moment python seed.py            # 手动补默认模板/话题
+docker compose exec -T moment python -c "import sqlite3; ..."  # 直接查库
+```
+
+## 本地开发
 
 ```powershell
 cd D:\moment-server
@@ -200,5 +257,10 @@ app/
   static/          style.css
 run.py             启动入口
 seed.py            写入默认心情/状态模板与推荐话题
+wsgi.py            gunicorn 生产入口
+Dockerfile / docker-compose.yml
+docker-entrypoint.sh
+assets/fonts/      Noto Color Emoji（OFL-1.1），生成默认图标用
+scripts/backup.sh  数据库 + media 备份
 tests/test_server.py
 ```

@@ -17,6 +17,7 @@
         {% if me %}
             <span class="who">{{ me.effective_name }}</span>
             <form method="post" action="{{ url_for('dashboard.logout') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button type="submit" class="link">退出</button>
             </form>
         {% endif %}

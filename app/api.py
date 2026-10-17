@@ -562,7 +562,10 @@ def _upload_token(key):
 
 
 def _media_url(key):
-    return f"{request.host_url.rstrip('/')}/media/{key}"
+    base = (current_app.config.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    if not base:
+        base = request.host_url.rstrip("/")
+    return f"{base}/media/{key}"
 
 
 def _resource(key):

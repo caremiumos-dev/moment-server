@@ -1,0 +1,14 @@
+Noto Color Emoji is licensed under the SIL Open Font License, Version 1.1.
+
+Copyright 2013 Google Inc. All Rights Reserved.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+The full license text is available at:
+
+    https://scripts.sil.org/OFL
+
+Source: https://github.com/googlefonts/noto-emoji (2D/fonts/NotoColorEmoji.ttf)
+
+It is bundled here only so `seed.py` can render the default mood/state icons
+identically on Windows and inside the Docker image, which has no system emoji
+font installed.

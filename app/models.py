@@ -291,9 +291,23 @@ def _upgrade_schema(connection) -> None:
 
 
 def init_engine(database_url: str) -> None:
-    """Create the engine/session factory and the schema."""
+    """Create the engine/session factory and the schema.
+
+    For SQLite we enable WAL and a longer busy timeout: the watch uploads and
+    the dashboard both write, and without WAL a concurrent read can fail with
+    "database is locked" under load.
+    """
     global engine, SessionLocal
-    engine = create_engine(database_url, future=True)
+    options = {"future": True}
+    if database_url.startswith("sqlite"):
+        options["connect_args"] = {"timeout": 30}
+    engine = create_engine(database_url, **options)
+    if database_url.startswith("sqlite"):
+        with engine.begin() as connection:
+            connection.execute(text("PRAGMA journal_mode=WAL"))
+            connection.execute(text("PRAGMA synchronous=NORMAL"))
+            connection.execute(text("PRAGMA busy_timeout=30000"))
+            connection.execute(text("PRAGMA foreign_keys=ON"))
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     Base.metadata.create_all(engine)
     with engine.begin() as connection:

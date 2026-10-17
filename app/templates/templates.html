@@ -9,6 +9,7 @@
     </p>
     <form class="inline" method="post" action="{{ url_for('dashboard.create_template') }}"
           enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>类型
             <select name="type">
                 <option value="0">心情</option>
@@ -58,6 +59,7 @@
                             <summary>编辑</summary>
                             <form method="post" action="{{ url_for('dashboard.update_template', template_id=row.id) }}"
                                   enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                 <label>类型
                                     <select name="type">
                                         <option value="0" {% if row.type == 0 %}selected{% endif %}>心情</option>
@@ -76,6 +78,7 @@
                         </details>
                         <form method="post" action="{{ url_for('dashboard.delete_template', template_id=row.id) }}"
                               onsubmit="return confirm('确定删除该模板吗？');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit" class="danger">删除</button>
                         </form>
                     </td>

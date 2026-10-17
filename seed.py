@@ -11,6 +11,11 @@ import os
 import sys
 from pathlib import Path
 
+# ``app.config`` reads the environment at import time, so this must be set
+# before the app package is imported below.  Seeding from the shell is a
+# one-off maintenance action, not a production listener.
+os.environ.setdefault("MOMENT_ALLOW_INSECURE_DEFAULTS", "1")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
@@ -18,7 +23,13 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 from app import create_app  # noqa: E402
 from app.models import MomentTemplate, Topic, get_session  # noqa: E402
 
-EMOJI_FONT = "C:/Windows/Fonts/seguiemj.ttf"
+# Bundled open-source emoji font (Noto Color Emoji, OFL-1.1).  Shipping it with
+# the app keeps the generated icons identical on Windows and inside the
+# container, where no system emoji font exists.
+EMOJI_FONT = str(Path(__file__).resolve().parent / "assets" / "fonts" / "NotoColorEmoji.ttf")
+# Noto Color Emoji only ships a 109px bitmap strike, so the size is fixed and
+# the icon is scaled afterwards instead of asking FreeType for another size.
+EMOJI_STRIKE_SIZE = 109
 ICON_SIZE = 108
 
 # (type, emoji, 文案)
@@ -50,24 +61,32 @@ TOPICS = [
 
 def draw_icon(path: Path, emoji: str) -> None:
     """Render one emoji into a square PNG the watch can load."""
-    image = Image.new("RGBA", (ICON_SIZE, ICON_SIZE), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    font = ImageFont.truetype(EMOJI_FONT, int(ICON_SIZE * 0.8))
+    # Noto Color Emoji is a bitmap font with a single 109px strike; render at
+    # that size and let Pillow scale the finished icon down.
+    canvas = Image.new("RGBA", (EMOJI_STRIKE_SIZE * 2, EMOJI_STRIKE_SIZE * 2), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.truetype(EMOJI_FONT, EMOJI_STRIKE_SIZE)
     left, top, right, bottom = draw.textbbox((0, 0), emoji, font=font, embedded_color=True)
     draw.text(
-        ((ICON_SIZE - (right - left)) / 2 - left, (ICON_SIZE - (bottom - top)) / 2 - top),
+        ((canvas.width - (right - left)) / 2 - left, (canvas.height - (bottom - top)) / 2 - top),
         emoji,
         font=font,
         embedded_color=True,
     )
+    image = canvas.crop(canvas.getbbox()).resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
     image.save(path, "PNG")
 
 
-def main() -> None:
-    app = create_app()
+def seed_database(app):
+    """Insert the defaults into an existing app; returns per-table counts.
+
+    Safe to call on every start: tables that already have rows are left
+    untouched, so an operator's edits are never overwritten.
+    """
     media_dir = Path(app.config["MEDIA_DIR"])
     media_dir.mkdir(parents=True, exist_ok=True)
     session = get_session()
+    counts = {}
     try:
         if session.query(MomentTemplate).count() == 0:
             for index, (moment_type, emoji, content) in enumerate(MOODS):
@@ -82,20 +101,26 @@ def main() -> None:
                         sort_value=len(MOODS) - index,
                     )
                 )
-            print(f"inserted {len(MOODS)} templates")
-        else:
-            print("templates already present, skipped")
+            counts["templates"] = len(MOODS)
 
         if session.query(Topic).count() == 0:
             for name, sort_value in TOPICS:
                 session.add(Topic(topic_name=name, sort_value=sort_value))
-            print(f"inserted {len(TOPICS)} topics")
-        else:
-            print("topics already present, skipped")
+            counts["topics"] = len(TOPICS)
 
         session.commit()
+        return counts
     finally:
         session.close()
+
+
+def main() -> None:
+    app = create_app()
+    counts = seed_database(app)
+    if counts:
+        print(f"inserted {counts}")
+    else:
+        print("templates and topics already present, nothing to do")
 
 
 if __name__ == "__main__":

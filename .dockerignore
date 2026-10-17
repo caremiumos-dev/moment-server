@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+__pycache__
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+media
+instance
+venv
+.venv
+tests
+README.md
+assets/fonts/_test.png

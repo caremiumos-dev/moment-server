@@ -2,9 +2,19 @@
 
 import os
 import secrets
+import time
 from pathlib import Path
 
-from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
+from flask import (
+    Blueprint,
+    current_app,
+    flash,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 from werkzeug.utils import secure_filename
 
 from app.api_common import normalize_chip_id
@@ -32,6 +42,36 @@ from app.models import (
 )
 
 dashboard = Blueprint("dashboard", __name__)
+
+
+def _csrf_token():
+    """Per-session token embedded in every dashboard form."""
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+@dashboard.app_context_processor
+def _inject_csrf():
+    return {"csrf_token": _csrf_token()}
+
+
+@dashboard.before_request
+def _check_csrf():
+    """Reject state-changing dashboard posts without the session token.
+
+    The watch API is authenticated by its own header and does not use browser
+    cookies, so this guard only applies to the admin dashboard forms.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    supplied = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token")
+    expected = session.get("csrf_token")
+    if not supplied or not expected or not secrets.compare_digest(supplied, expected):
+        return "CSRF token missing or invalid", 400
+    return None
 
 
 @dashboard.get("/")

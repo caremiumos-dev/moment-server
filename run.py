@@ -7,6 +7,10 @@ Listens on 0.0.0.0:8000 so a watch on the same LAN can reach it.
 
 import os
 
+# This is the development server: opt out of the production secret check so
+# `python run.py` keeps working out of the box.  Production uses wsgi.py.
+os.environ.setdefault("MOMENT_ALLOW_INSECURE_DEFAULTS", "1")
+
 from app import create_app
 
 app = create_app()

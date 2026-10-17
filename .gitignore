@@ -2,6 +2,10 @@ __pycache__/
 *.pyc
 *.db
 media/
+.env
+*.db-wal
+*.db-shm
+backups/
 instance/
 venv/
 .venv/

@@ -22,6 +22,7 @@
                 <td class="actions">
                     <form method="post" action="{{ url_for('dashboard.delete_moment', moment_id=moment.id) }}"
                           onsubmit="return confirm('确定删除这条动态吗？');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button type="submit" class="danger">删除</button>
                     </form>
                 </td>

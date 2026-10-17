@@ -11,6 +11,7 @@
 <section class="card">
     <h2>新增账号</h2>
     <form class="inline" method="post" action="{{ url_for('dashboard.create_user') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>用户名<input type="text" name="username" required></label>
         <label>密码<input type="text" name="password" required></label>
         <label>watchId<input type="text" name="watch_id" required></label>
@@ -68,6 +69,7 @@
                     <details>
                         <summary>编辑</summary>
                         <form method="post" action="{{ url_for('dashboard.update_user', user_id=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <label>昵称<input type="text" name="display_name" value="{{ user.display_name }}"></label>
                             <label>新密码<input type="text" name="password" placeholder="留空不修改"></label>
                             <label>chipId<input type="text" name="chip_id" value="{{ user.chip_id }}" placeholder="留空 = 不限制设备"></label>
@@ -79,32 +81,39 @@
                         </form>
                     </details>
                     <form method="post" action="{{ url_for('dashboard.toggle_user', user_id=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button type="submit">{{ "停用" if user.is_active else "启用" }}</button>
                     </form>
                     <form method="post" action="{{ url_for('dashboard.revoke_user_tokens', user_id=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button type="submit">撤销 token</button>
                     </form>
                     {% if user.is_banned %}
                         <form method="post" action="{{ url_for('dashboard.unban_user', user_id=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit">解除封禁</button>
                         </form>
                     {% else %}
                         <form method="post" action="{{ url_for('dashboard.ban_user', user_id=user.id) }}"
                               data-ban-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit" class="danger">封禁</button>
                         </form>
                     {% endif %}
                     {% if user.chip_id %}
                         <form method="post" action="{{ url_for('dashboard.unbind_chip', user_id=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit">解绑设备</button>
                         </form>
                     {% elif user.last_chip_id %}
                         <form method="post" action="{{ url_for('dashboard.bind_seen_chip', user_id=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit">绑定该设备</button>
                         </form>
                     {% endif %}
                     <form method="post" action="{{ url_for('dashboard.delete_user', user_id=user.id) }}"
                           onsubmit="return confirm('删除账号会同时删除其动态和评论，确定吗？');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <button type="submit" class="danger">删除</button>
                     </form>
                 </td>
@@ -131,6 +140,7 @@
                     <td>{{ review.create_time.strftime("%Y-%m-%d %H:%M") }}</td>
                     <td class="actions">
                         <form method="post" action="{{ url_for('dashboard.mark_review_handled', review_id=review.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit">标记已处理</button>
                         </form>
                     </td>
