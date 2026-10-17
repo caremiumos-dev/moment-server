@@ -12,16 +12,27 @@ from app.api_common import (
     authenticate,
     ok,
 )
-from app.models import Like, Moment, ReviewRequest, User, get_session, millis, utcnow
+from app.models import (
+    Friendship,
+    Like,
+    Moment,
+    ReviewRequest,
+    User,
+    get_session,
+    millis,
+    utcnow,
+)
 
 extra = Blueprint("extra", __name__)
 
-# ``PersonalState.statusId`` — the personal page treats 0 as "no active state".
-_NO_STATE = 0
-
 
 def _body():
+    """Request JSON, or an empty dict."""
     return request.get_json(silent=True) or {}
+
+
+# ``PersonalState.statusId`` — the personal page treats 0 as "no active state".
+_NO_STATE = 0
 
 
 @extra.post("/smartwatch/geniusAccount/watchGetInfo")
@@ -132,7 +143,59 @@ def like_personal_state():
 @extra.post("/watchfriend/delFriendByWatch")
 @authenticate()
 def delete_friend():
-    """Friend lists are not modelled, so removal is a no-op success."""
+    """Remove one friendship edge for the caller."""
+    from flask import g
+
+    payload = _body()
+    target_watch_id = (payload.get("friendWatchId") or payload.get("watchId") or "").strip()
+    if not target_watch_id:
+        return ok("1")
+    session = get_session()
+    try:
+        target = session.query(User).filter_by(watch_id=target_watch_id).one_or_none()
+        if target is not None:
+            session.query(Friendship).filter(
+                Friendship.user_id == g.current_user.id,
+                Friendship.friend_user_id == target.id,
+            ).delete(synchronize_session=False)
+            session.commit()
+        return ok("1")
+    finally:
+        session.close()
+
+
+@extra.post("/extra/getFriendList")
+@authenticate()
+def get_friend_list():
+    """好友列表，供客户端在本地通讯录 provider 拿不到数据时回退使用。
+
+    返回一个 ``Friend`` 数组：``watchId`` / ``name`` / ``friendIcon``，与
+    客户端 ``com.xtc.moment.module.bean.Friend`` 一一对应。备注名优先于
+    账号昵称；没有头像时 ``friendIcon`` 为空字符串，客户端会回退到默认头像。
+    """
+    from flask import g
+
+    session = get_session()
+    try:
+        rows = (
+            session.query(Friendship)
+            .filter(Friendship.user_id == g.current_user.id)
+            .order_by(Friendship.remark, Friendship.create_time)
+            .all()
+        )
+        return ok(
+            [
+                {
+                    "watchId": row.friend_user.watch_id,
+                    "name": row.remark or row.friend_user.effective_name,
+                    "friendIcon": "",
+                }
+                for row in rows
+                if row.friend_user is not None and row.friend_user.is_active
+            ]
+        )
+    finally:
+        session.close()
     return ok("1")
 
 

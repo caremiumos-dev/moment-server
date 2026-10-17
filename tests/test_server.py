@@ -89,6 +89,70 @@ class MomentServerTest(unittest.TestCase):
         probe.config["SECRET_KEY"] = "a-real-production-secret"
         _check_secret(probe)  # must not raise
 
+    def test_friend_list_admin_and_fallback_endpoint(self):
+        """The server friend list backs the client's provider fallback."""
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form(
+            "/users/create",
+            data={"username": "alice", "password": "pw", "watch_id": "W2011", "is_active": "on",
+                  "display_name": "小红"},
+        )
+        self.post_form(
+            "/users/create",
+            data={"username": "bob", "password": "pw", "watch_id": "W2012", "is_active": "on",
+                  "display_name": "小明"},
+        )
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            alice_id = db.query(User).filter_by(watch_id="W2011").one().id
+            db.close()
+
+        # Nobody has friends yet, so the fallback returns an empty list.
+        headers = {"Base-Request-Param": base_param("W2011")}
+        empty = self.client.post("/extra/getFriendList", json={"watchId": "W2011"},
+                                 headers=headers).get_json()
+        self.assertEqual(empty["code"], "000001")
+        self.assertEqual(empty["data"], [])
+
+        self.post_form(
+            f"/friends/{alice_id}/add",
+            data={"friend_watch_id": "W2012", "remark": "同学"},
+        )
+
+        listing = self.client.post("/extra/getFriendList", json={"watchId": "W2011"},
+                                   headers=headers).get_json()["data"]
+        self.assertEqual(len(listing), 1)
+        self.assertEqual(listing[0]["watchId"], "W2012")
+        # The remark wins over the account's own display name.
+        self.assertEqual(listing[0]["name"], "同学")
+        self.assertEqual(listing[0]["friendIcon"], "")
+
+        # Adding writes both directions, so the other side sees it too.
+        other = self.client.post(
+            "/extra/getFriendList", json={"watchId": "W2012"},
+            headers={"Base-Request-Param": base_param("W2012")},
+        ).get_json()["data"]
+        self.assertEqual([entry["watchId"] for entry in other], ["W2011"])
+        # Without a remark the friend's own display name is used.
+        self.assertEqual(other[0]["name"], "小红")
+
+        # Removal clears both directions again.
+        self.post_form(
+            f"/friends/{alice_id}/remove", data={"friend_watch_id": "W2012"}
+        )
+        after = self.client.post("/extra/getFriendList", json={"watchId": "W2011"},
+                                 headers=headers).get_json()["data"]
+        self.assertEqual(after, [])
+
+    def test_friend_list_requires_a_known_account(self):
+        response = self.client.post(
+            "/extra/getFriendList", json={"watchId": "W9999"},
+            headers={"Base-Request-Param": base_param("W9999")},
+        ).get_json()
+        self.assertEqual(response["code"], "000003")
+
     def test_dashboard_posts_require_csrf_token(self):
         self.post_form("/login", data={"username": "admin", "password": "admin123"})
         # A valid session without the token is still rejected.

@@ -83,6 +83,31 @@ class User(Base):
         return self.display_name or self.username
 
 
+class Friendship(Base):
+    """A directed friend relation between two watch accounts.
+
+    Stored as two directed rows (A→B and B→A) when a friendship is created,
+    so ``/extra/getFriendList`` can simply select the rows owned by the
+    caller.  Keeping the rows independent makes it possible to model a
+    one-way follow later without a schema change.
+    """
+
+    __tablename__ = "friendships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "friend_user_id", name="uq_friendship_pair"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    friend_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    # Optional remark shown instead of the friend's own display name.
+    remark: Mapped[str] = mapped_column(String(64), default="")
+    create_time: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    friend_user: Mapped[User] = relationship(foreign_keys=[friend_user_id])
+
+
 class AuthToken(Base):
     """Bearer token issued to a watch account after authentication."""
 

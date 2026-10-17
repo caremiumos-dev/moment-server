@@ -28,6 +28,7 @@ from app.auth import (
 from app.models import (
     AuthToken,
     Comment,
+    Friendship,
     Like,
     Moment,
     MomentTemplate,
@@ -679,3 +680,91 @@ def save_topic_config():
     finally:
         db.close()
     return redirect(url_for("dashboard.topics"))
+
+
+@dashboard.get("/friends")
+@login_required
+def friends():
+    """好友关系管理：每个账号维护自己的好友列表。"""
+    db = get_session()
+    try:
+        users = db.query(User).order_by(User.id).all()
+        rows = []
+        for user in users:
+            entries = (
+                db.query(Friendship)
+                .filter(Friendship.user_id == user.id)
+                .order_by(Friendship.create_time)
+                .all()
+            )
+            rows.append({"user": user, "friends": entries})
+        return render_template("friends.html", rows=rows, me=current_user())
+    finally:
+        db.close()
+
+
+@dashboard.post("/friends/<int:user_id>/add")
+@login_required
+def add_friend(user_id):
+    """Add a two-way friendship between two existing accounts."""
+    form = request.form
+    target_watch_id = (form.get("friend_watch_id") or "").strip()
+    remark = (form.get("remark") or "").strip()
+    db = get_session()
+    try:
+        user = db.get(User, user_id)
+        target = db.query(User).filter_by(watch_id=target_watch_id).one_or_none()
+        if user is None or target is None:
+            flash("账号不存在", "error")
+            return redirect(url_for("dashboard.friends"))
+        if user.id == target.id:
+            flash("不能把自己加为好友", "error")
+            return redirect(url_for("dashboard.friends"))
+        existing = (
+            db.query(Friendship)
+            .filter_by(user_id=user.id, friend_user_id=target.id)
+            .one_or_none()
+        )
+        if existing is not None:
+            existing.remark = remark
+            flash("好友已存在，已更新备注", "ok")
+        else:
+            _add_friendship(db, user, target, remark)
+            flash(f"已添加好友 {target.effective_name}", "ok")
+        db.commit()
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.friends"))
+
+
+@dashboard.post("/friends/<int:user_id>/remove")
+@login_required
+def remove_friend(user_id):
+    """Remove both directions of a friendship."""
+    target_watch_id = (request.form.get("friend_watch_id") or "").strip()
+    db = get_session()
+    try:
+        user = db.get(User, user_id)
+        target = db.query(User).filter_by(watch_id=target_watch_id).one_or_none()
+        if user is not None and target is not None:
+            db.query(Friendship).filter(
+                Friendship.user_id.in_([user.id, target.id]),
+                Friendship.friend_user_id.in_([user.id, target.id]),
+            ).delete(synchronize_session=False)
+            db.commit()
+            flash("已移除好友", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.friends"))
+
+
+def _add_friendship(db, user, target, remark=""):
+    """Create both directed edges unless they already exist."""
+    for owner, other, text in ((user, target, remark), (target, user, "")):
+        row = (
+            db.query(Friendship)
+            .filter_by(user_id=owner.id, friend_user_id=other.id)
+            .one_or_none()
+        )
+        if row is None:
+            db.add(Friendship(user_id=owner.id, friend_user_id=other.id, remark=text))

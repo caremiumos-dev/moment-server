@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}好友关系 - 好友圈服务端{% endblock %}
+{% block content %}
+<section class="card">
+    <h2>好友关系</h2>
+    <p class="muted">
+        好友关系决定「好友可见」范围、动态过滤和点赞列表。添加时会同时写入双向关系；
+        客户端优先读本机通讯录 provider，拿不到时才回退到本服务的
+        <code>/extra/getFriendList</code>。
+    </p>
+</section>
+
+{% for row in rows %}
+    {% set user = row.user %}
+    <section class="card">
+        <h2>
+            {{ user.effective_name }}
+            <span class="muted mono">{{ user.watch_id }}</span>
+            <span class="muted">（{{ row.friends|length }} 个好友）</span>
+        </h2>
+        <form class="inline" method="post" action="{{ url_for('dashboard.add_friend', user_id=user.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label>好友 watchId<input type="text" name="friend_watch_id" required placeholder="对方的 watchId"></label>
+            <label>备注<input type="text" name="remark" placeholder="可留空"></label>
+            <button type="submit">添加好友</button>
+        </form>
+        {% if row.friends %}
+            <table>
+                <thead>
+                <tr><th>watchId</th><th>昵称</th><th>备注</th><th>添加时间</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                {% for entry in row.friends %}
+                    <tr>
+                        <td class="mono">{{ entry.friend_user.watch_id }}</td>
+                        <td>{{ entry.friend_user.effective_name }}</td>
+                        <td>{{ entry.remark }}</td>
+                        <td>{{ entry.create_time.strftime("%Y-%m-%d %H:%M") }}</td>
+                        <td class="actions">
+                            <form method="post" action="{{ url_for('dashboard.remove_friend', user_id=user.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <input type="hidden" name="friend_watch_id" value="{{ entry.friend_user.watch_id }}">
+                                <button type="submit" class="danger">移除</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <p class="muted">还没有好友。</p>
+        {% endif %}
+    </section>
+{% endfor %}
+{% endblock %}
