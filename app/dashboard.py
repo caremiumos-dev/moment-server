@@ -56,7 +56,15 @@ def _csrf_token():
 
 @dashboard.app_context_processor
 def _inject_csrf():
-    return {"csrf_token": _csrf_token()}
+    # Bump the stylesheet query string whenever style.css changes so a browser
+    # that cached the old file cannot keep showing an unstyled avatar preview.
+    try:
+        style_version = int(os.path.getmtime(
+            os.path.join(current_app.static_folder, "style.css")
+        ))
+    except OSError:
+        style_version = 0
+    return {"csrf_token": _csrf_token(), "style_version": style_version}
 
 
 @dashboard.before_request
@@ -213,6 +221,10 @@ def create_user():
 @login_required
 def update_user(user_id):
     form = request.form
+    avatar, avatar_error = _save_user_avatar(request.files.get("avatar"), form.get("avatar"))
+    if avatar_error:
+        flash(avatar_error, "error")
+        return redirect(url_for("dashboard.home"))
     db = get_session()
     try:
         user = db.get(User, user_id)
@@ -220,6 +232,7 @@ def update_user(user_id):
             flash("账号不存在", "error")
             return redirect(url_for("dashboard.home"))
         user.display_name = (form.get("display_name") or "").strip()
+        user.avatar = avatar
         new_password = form.get("password") or ""
         if new_password:
             user.set_password(new_password)
@@ -576,6 +589,21 @@ def _save_template_icon(upload, resource_text):
     media_dir = Path(current_app.config["MEDIA_DIR"])
     media_dir.mkdir(parents=True, exist_ok=True)
     name = f"template_{secrets.token_hex(8)}{suffix}"
+    upload.save(os.fspath(media_dir / name))
+    return f"media:{name}", None
+
+
+def _save_user_avatar(upload, avatar_text):
+    """Store a dashboard avatar upload, or keep the pasted absolute url."""
+    avatar_text = (avatar_text or "").strip()
+    if upload is None or not upload.filename:
+        return avatar_text, None
+    suffix = Path(secure_filename(upload.filename)).suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        return None, "头像只支持 png/jpg/webp/gif"
+    media_dir = Path(current_app.config["MEDIA_DIR"])
+    media_dir.mkdir(parents=True, exist_ok=True)
+    name = f"avatar_{secrets.token_hex(8)}{suffix}"
     upload.save(os.fspath(media_dir / name))
     return f"media:{name}", None
 

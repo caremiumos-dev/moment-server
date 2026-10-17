@@ -52,6 +52,10 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     watch_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(64), default="")
+    # Avatar shown by the watch in the moment feed and friend lists.  Either an
+    # absolute url or ``media:<file>`` naming a file under ``MEDIA_DIR``; empty
+    # means "no server avatar", and the client keeps its local contact icon.
+    avatar: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     # Hardware chip id (``ro.boot.xtc.chipid``), which the client sends as the
     # ``token`` field of Base-Request-Param.  Empty means "not bound yet", in
     # which case any device presenting this watch id is accepted.
@@ -291,6 +295,7 @@ SessionLocal = None
 # tables, so an existing database needs these added explicitly.
 ADDED_COLUMNS = {
     "users": {
+        "avatar": "TEXT NOT NULL DEFAULT ''",
         "chip_id": "VARCHAR(64) NOT NULL DEFAULT ''",
         "last_chip_id": "VARCHAR(64) NOT NULL DEFAULT ''",
         "is_banned": "BOOLEAN NOT NULL DEFAULT 0",

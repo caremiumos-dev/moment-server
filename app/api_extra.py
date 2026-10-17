@@ -12,6 +12,7 @@ from app.api_common import (
     authenticate,
     ok,
 )
+from app.media import absolute_resource
 from app.models import (
     Friendship,
     Like,
@@ -55,7 +56,7 @@ def _personal_info(user):
         "friends": 0,
         "contacts": 0,
         "level": 1,
-        "icon": "",
+        "icon": absolute_resource(user.avatar),
         "name": user.effective_name,
         "gender": 3,
         "birthday": 0,
@@ -188,7 +189,7 @@ def get_friend_list():
                 {
                     "watchId": row.friend_user.watch_id,
                     "name": row.remark or row.friend_user.effective_name,
-                    "friendIcon": "",
+                    "friendIcon": absolute_resource(row.friend_user.avatar),
                 }
                 for row in rows
                 if row.friend_user is not None and row.friend_user.is_active
@@ -197,6 +198,46 @@ def get_friend_list():
     finally:
         session.close()
     return ok("1")
+
+
+@extra.post("/extra/getFriendAvatar")
+@authenticate()
+def get_friend_avatars():
+    """Return server-set avatars for a batch of friend watch ids.
+
+    The client normally reads contacts from the system provider.  A friend
+    added only on the self-hosted server has no provider row, so this endpoint
+    lets the client overlay the server avatar without replacing the provider
+    as the source of names and friendship data.
+    """
+    from flask import g
+
+    payload = _body()
+    watch_ids = payload.get("watchIds") if isinstance(payload, dict) else None
+    if not isinstance(watch_ids, list):
+        watch_ids = []
+    watch_ids = [str(value).strip() for value in watch_ids if str(value).strip()]
+    if not watch_ids:
+        return ok([])
+    # Cap the request to keep a malformed client from generating an unbounded
+    # SQL IN clause; the watch's contact page size is far below this limit.
+    watch_ids = list(dict.fromkeys(watch_ids))[:500]
+    session = get_session()
+    try:
+        rows = (
+            session.query(User)
+            .filter(User.watch_id.in_(watch_ids), User.is_active.is_(True))
+            .all()
+        )
+        return ok(
+            [
+                {"watchId": row.watch_id, "friendIcon": absolute_resource(row.avatar)}
+                for row in rows
+                if row.avatar
+            ]
+        )
+    finally:
+        session.close()
 
 
 @extra.get("/operation/exp/getWatchScoreLevelInfo/<watch_id>/<model>")

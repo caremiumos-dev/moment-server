@@ -87,6 +87,20 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lin
 th { color: var(--muted); font-weight: 500; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
 .muted { color: var(--muted); }
+.avatar-frame {
+    display: block;
+    width: 36px;
+    height: 36px;
+    overflow: hidden;
+    border-radius: 50%;
+    background: #eef1f4;
+}
+.avatar-preview {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover;
+}
 .content { max-width: 320px; word-break: break-word; }
 
 .stats { display: flex; gap: 16px; margin-bottom: 20px; }

@@ -146,12 +146,133 @@ class MomentServerTest(unittest.TestCase):
                                  headers=headers).get_json()["data"]
         self.assertEqual(after, [])
 
+    def test_dashboard_avatar_is_served_in_friend_data(self):
+        """Dashboard avatar uploads become absolute URLs in every client shape."""
+        import io
+
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form(
+            "/users/create",
+            data={"username": "avatar-user", "password": "pw", "watch_id": "WAV1",
+                  "is_active": "on", "display_name": "头像用户"},
+        )
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            user_id = db.query(User).filter_by(watch_id="WAV1").one().id
+            db.close()
+        self.post_form(
+            f"/users/{user_id}/update",
+            data={"display_name": "头像用户", "is_active": "on",
+                  "avatar": (io.BytesIO(b"fake-png"), "avatar.png")},
+            content_type="multipart/form-data",
+        )
+        headers = {"Base-Request-Param": base_param("WAV1")}
+        info = self.client.post("/smartwatch/geniusAccount/watchGetInfo", json={},
+                                headers=headers).get_json()["data"]
+        self.assertTrue(info["icon"].startswith("http://localhost/media/avatar_"))
+
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            admin_id = db.query(User).filter_by(username="admin").one().id
+            db.close()
+        self.post_form(f"/friends/{admin_id}/add", data={"friend_watch_id": "WAV1"})
+        friend_headers = {"Base-Request-Param": base_param("admin")}
+        listing = self.client.post("/extra/getFriendList", json={"watchId": "admin"},
+                                   headers=friend_headers).get_json()["data"]
+        entry = next(row for row in listing if row["watchId"] == "WAV1")
+        self.assertIn("/media/avatar_", entry["friendIcon"])
+
+        avatars = self.client.post(
+            "/extra/getFriendAvatar", json={"watchIds": ["WAV1", "missing"]},
+            headers=headers,
+        ).get_json()["data"]
+        self.assertEqual(len(avatars), 1)
+        self.assertEqual(avatars[0]["watchId"], "WAV1")
+        self.assertIn("/media/avatar_", avatars[0]["friendIcon"])
+
+    def test_search_like_flag_is_per_requesting_account(self):
+        """A liked friend moment must stay liked after the next feed refresh."""
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form(
+            "/users/create",
+            data={"username": "like-owner", "password": "pw", "watch_id": "WLIKE1",
+                  "is_active": "on"},
+        )
+        self.post_form(
+            "/users/create",
+            data={"username": "like-guest", "password": "pw", "watch_id": "WLIKE2",
+                  "is_active": "on"},
+        )
+        owner_headers = {"Base-Request-Param": base_param("WLIKE1")}
+        guest_headers = {"Base-Request-Param": base_param("WLIKE2")}
+        moment = self.client.post(
+            "/moment/public", json={"type": 3, "content": "like test"},
+            headers=owner_headers,
+        ).get_json()["data"]
+        self.client.post("/moment/like", json={"momentId": moment["momentId"]},
+                         headers=guest_headers)
+        listing = self.client.post(
+            "/moment/search", json={"size": 50}, headers=guest_headers
+        ).get_json()["data"]["watchMoments"]
+        listed = next(row for row in listing if row["momentId"] == moment["momentId"])
+        self.assertFalse(listed["enableLike"])
+        self.assertEqual(listed["likeTotal"], 1)
+
+        owner_view = self.client.post(
+            "/moment/search", json={"size": 50}, headers=owner_headers
+        ).get_json()["data"]["watchMoments"]
+        owner_listed = next(row for row in owner_view if row["momentId"] == moment["momentId"])
+        self.assertTrue(owner_listed["enableLike"])
+
     def test_friend_list_requires_a_known_account(self):
         response = self.client.post(
             "/extra/getFriendList", json={"watchId": "W9999"},
             headers={"Base-Request-Param": base_param("W9999")},
         ).get_json()
         self.assertEqual(response["code"], "000003")
+
+    def test_comment_delete_routes_used_for_short_watch_ids(self):
+        """Comments on 32-char account ids go through advertComment/deleteComment."""
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form(
+            "/users/create",
+            data={"username": "owner", "password": "pw", "watch_id": "W3011", "is_active": "on"},
+        )
+        self.post_form(
+            "/users/create",
+            data={"username": "guest", "password": "pw", "watch_id": "W3012", "is_active": "on"},
+        )
+        owner_headers = {"Base-Request-Param": base_param("W3011")}
+        guest_headers = {"Base-Request-Param": base_param("W3012")}
+
+        moment = self.client.post(
+            "/moment/public", json={"type": 3, "content": "hello"}, headers=owner_headers
+        ).get_json()["data"]
+        posted = self.client.post(
+            "/moment/comment",
+            json={"momentId": moment["momentId"], "comment": "hi"},
+            headers=guest_headers,
+        ).get_json()["data"]["comment"]
+        comment_id = posted["commentId"]
+
+        # The watch uses this endpoint whenever the moment's watchId is short.
+        response = self.client.post(
+            "/moment/advertComment/deleteComment",
+            json={"commentId": comment_id},
+            headers=guest_headers,
+        ).get_json()
+        self.assertEqual(response["code"], "000001")
+
+        remaining = self.client.post(
+            "/moment/getMomentCommentAll",
+            json={"momentId": moment["momentId"]},
+            headers=owner_headers,
+        ).get_json()["data"]["comments"]
+        self.assertNotIn(comment_id, [c["commentId"] for c in remaining])
 
     def test_dashboard_posts_require_csrf_token(self):
         self.post_form("/login", data={"username": "admin", "password": "admin123"})

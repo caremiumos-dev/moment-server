@@ -28,7 +28,7 @@
     <table>
         <thead>
         <tr>
-            <th>ID</th><th>用户名</th><th>watchId</th><th>昵称</th>
+            <th>ID</th><th>头像</th><th>用户名</th><th>watchId</th><th>昵称</th>
             <th>chipId</th><th>动态</th><th>评论</th><th>点赞</th><th>Token</th>
             <th>状态</th><th>复核</th><th>操作</th>
         </tr>
@@ -38,6 +38,13 @@
             {% set user = row.user %}
             <tr>
                 <td>{{ user.id }}</td>
+                <td>
+                    {% if user.avatar %}
+                        <span class="avatar-frame">
+                            <img class="avatar-preview" alt="" src="{% if user.avatar.startswith('media:') %}{{ url_for('media', name=user.avatar[6:]) }}{% else %}{{ user.avatar }}{% endif %}">
+                        </span>
+                    {% else %}<span class="muted">—</span>{% endif %}
+                </td>
                 <td>
                     {{ user.username }}
                     {% if user.is_admin %}<span class="tag">管理员</span>{% endif %}
@@ -68,9 +75,12 @@
                 <td class="actions">
                     <details>
                         <summary>编辑</summary>
-                        <form method="post" action="{{ url_for('dashboard.update_user', user_id=user.id) }}">
+                        <form method="post" action="{{ url_for('dashboard.update_user', user_id=user.id) }}"
+                              enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <label>昵称<input type="text" name="display_name" value="{{ user.display_name }}"></label>
+                            <label>头像<input type="file" name="avatar" accept="image/png,image/jpeg,image/webp,image/gif"></label>
+                            <label>头像地址<input type="text" name="avatar" value="{{ user.avatar }}" placeholder="上传文件优先；也可填完整 URL"></label>
                             <label>新密码<input type="text" name="password" placeholder="留空不修改"></label>
                             <label>chipId<input type="text" name="chip_id" value="{{ user.chip_id }}" placeholder="留空 = 不限制设备"></label>
                             <input type="hidden" name="is_admin" value="off">

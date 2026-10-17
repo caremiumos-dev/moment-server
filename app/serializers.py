@@ -2,6 +2,7 @@
 
 import json
 
+from app.media import absolute_resource
 from app.models import millis
 
 
@@ -20,19 +21,29 @@ def serialize_user(user):
         "watchId": user.watch_id,
         "watchName": user.effective_name,
         "name": user.effective_name,
-        "icon": "",
+        "icon": absolute_resource(user.avatar),
     }
 
 
-def serialize_moment(moment):
+def serialize_moment(moment, current_user_id=None):
     """One entry of ``Moments.watchMoments``.
 
     ``BeanConverterUtil.convertToDbMoment`` reads ``checked``/``likeTotal``/
     ``watchId``/``emotionId``/``topicList`` and the list UI reads the display
     fields (``name``/``iconPath``/``location``/``scaleType``), so all of them
     are filled in here.
+
+    ``enableLike`` is the watch's "can still like" flag, not a stored column:
+    the client renders ``setLike(!enableLike)`` and flips it after a like, so
+    it must be false once the requesting account has already liked the moment.
+    Returning a constant true made every refresh repaint a friend's moment as
+    un-liked and left cancel-like unreachable.
     """
     comments = [comment for comment in moment.comments if not comment.deleted]
+    likes = moment.likes if moment.likes is not None else []
+    already_liked = any(
+        like.user_id == current_user_id for like in likes
+    ) if current_user_id is not None else False
     return {
         "id": moment.id,
         "momentId": moment.moment_id,
@@ -41,7 +52,7 @@ def serialize_moment(moment):
         "watchId": moment.author.watch_id,
         "watchName": moment.author.effective_name,
         "name": moment.author.effective_name,
-        "iconPath": "",
+        "iconPath": absolute_resource(moment.author.avatar),
         "type": moment.type,
         "content": moment.content,
         "resource": moment.resource,
@@ -52,8 +63,8 @@ def serialize_moment(moment):
         "permissionType": moment.permission_type,
         "topicList": _topic_list(moment.topic_list_json),
         "topicListJson": moment.topic_list_json or "",
-        "likeTotal": len(moment.likes) if moment.likes is not None else 0,
-        "enableLike": True,
+        "likeTotal": len(likes),
+        "enableLike": not already_liked,
         "checked": True,
         "skiped": False,
         "previewed": False,

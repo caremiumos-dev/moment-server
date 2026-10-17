@@ -5,7 +5,7 @@ import secrets
 import datetime as dt
 from pathlib import Path
 
-from flask import Blueprint, current_app, request
+from flask import Blueprint, current_app, g, request
 from sqlalchemy import desc as sql_desc
 
 from app.api_common import (
@@ -27,6 +27,7 @@ from app.models import (
     millis,
     utcnow,
 )
+from app.media import absolute_resource, media_url
 from app.serializers import (
     serialize_comment,
     serialize_like,
@@ -78,7 +79,7 @@ def publish_moment():
         )
         session.add(moment)
         session.commit()
-        return ok(serialize_moment(moment))
+        return ok(serialize_moment(moment, g.current_user.id))
     finally:
         session.close()
 
@@ -133,7 +134,9 @@ def search_moment():
         moments = query.limit(size).all()
         return ok(
             {
-                "watchMoments": [serialize_moment(moment) for moment in moments],
+                "watchMoments": [
+                    serialize_moment(moment, g.current_user.id) for moment in moments
+                ],
                 "adverts": [],
                 "likeNotify": None,
                 "maxLikeNum": 0,
@@ -270,7 +273,13 @@ def delete_comment():
         comment = session.query(Comment).filter_by(comment_id=payload.get("commentId")).one_or_none()
         if comment is None:
             return fail(ERROR_NOT_FOUND, "comment not found")
-        if comment.user_id != g.current_user.id and not g.current_user.is_admin:
+        # A comment may be deleted by its author, or by the author of the
+        # moment it belongs to (the original app allows moderating your own
+        # post's comment section), plus admins.
+        moment = session.query(Moment).filter_by(moment_id=comment.moment_id).one_or_none()
+        is_comment_author = comment.user_id == g.current_user.id
+        is_moment_author = moment is not None and moment.user_id == g.current_user.id
+        if not (is_comment_author or is_moment_author or g.current_user.is_admin):
             return fail(ERROR_INVALID_PARAM, "not the owner")
         comment.deleted = True
         session.commit()
@@ -401,7 +410,7 @@ def moment_template():
         resources = []
         for row in rows:
             item = serialize_template(row)
-            item["resource"] = _absolute_resource(item["resource"])
+            item["resource"] = absolute_resource(item["resource"])
             resources.append(item)
         newest = max((millis(row.update_time) for row in rows), default=0)
         if update_id:
@@ -411,18 +420,6 @@ def moment_template():
         return ok({"resources": changed, "total": len(resources), "updateId": newest})
     finally:
         session.close()
-
-
-def _absolute_resource(value):
-    """Turn a stored ``media:<file>`` marker into a url the watch can load.
-
-    The dashboard writes icons as ``media:<file>`` because it has no request
-    context to build an absolute url from; the response is where the host is
-    known, so the expansion happens here.
-    """
-    if value and value.startswith("media:"):
-        return _media_url(value[len("media:"):])
-    return value
 
 
 @api.post("/moment/file/video/transfer")
@@ -514,7 +511,7 @@ def upload_media():
     media_dir = Path(current_app.config["MEDIA_DIR"])
     media_dir.mkdir(parents=True, exist_ok=True)
     (media_dir / key).write_bytes(payload)
-    return ok({"key": key, "size": len(payload), "url": _media_url(key)})
+    return ok({"key": key, "size": len(payload), "url": media_url(key)})
 
 
 @api.post("/moment/file/download")
@@ -561,18 +558,11 @@ def _upload_token(key):
     return f"local:{key}"
 
 
-def _media_url(key):
-    base = (current_app.config.get("PUBLIC_BASE_URL") or "").rstrip("/")
-    if not base:
-        base = request.host_url.rstrip("/")
-    return f"{base}/media/{key}"
-
-
 def _resource(key):
     """A ``CloudFileResource`` pointing at our own ``/media`` route."""
     return {
         "key": key,
-        "downloadUrl": _media_url(key),
+        "downloadUrl": media_url(key),
         "urlDeadline": _deadline(),
         "width": 320,
         "height": 360,
@@ -636,7 +626,33 @@ def comment_advert():
 @api.post("/moment/advertComment/deleteComment")
 @authenticate()
 def delete_advert_comment():
-    return ok({"code": "000001", "data": None, "desc": ""})
+    """Delete a comment by id.
+
+    The watch routes deletions here whenever the moment's ``watchId`` is
+    shorter than 40 characters, which it treats as an "official" moment.  A
+    self-hosted account id is 32 hex characters, so every comment posted on a
+    friend's moment ends up on this endpoint rather than
+    ``/moment/deleteComment``.  It must therefore really delete the row:
+    answering success without touching the database makes the comment
+    reappear on the next refresh.
+    """
+    from flask import g
+
+    payload = _body()
+    session = get_session()
+    try:
+        comment = session.query(Comment).filter_by(comment_id=payload.get("commentId")).one_or_none()
+        if comment is None:
+            return ok({"code": "000001", "data": None, "desc": ""})
+        moment = session.query(Moment).filter_by(moment_id=comment.moment_id).one_or_none()
+        is_comment_author = comment.user_id == g.current_user.id
+        is_moment_author = moment is not None and moment.user_id == g.current_user.id
+        if is_comment_author or is_moment_author or g.current_user.is_admin:
+            comment.deleted = True
+            session.commit()
+        return ok({"code": "000001", "data": None, "desc": ""})
+    finally:
+        session.close()
 
 
 @api.post("/moment/refreshos")
