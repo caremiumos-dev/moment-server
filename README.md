@@ -138,7 +138,7 @@ dashboard 的账号列表里点「封禁」即可。封禁后的行为：
 * **所有接口**都返回线上那条封禁响应（`app/api_common.py` 的 `fail_banned`）：
 
   ```json
-  {"code":"000007","data":null,"desc":"request parameter is invalid.","watchTips":"Your account has been suspend"}
+  {"code":"000007","data":null,"desc":"request parameter is invalid.","watchTips":"Your account has been suspended"}
   ```
 
 * **无法登录**：`/moment/auth/login` 同样返回上面的包体

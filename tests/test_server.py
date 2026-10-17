@@ -676,7 +676,7 @@ class MomentServerTest(unittest.TestCase):
                 response = self.client.post(path, json={}, headers=headers).get_json()
                 self.assertEqual(response["code"], "000007", path)
                 self.assertEqual(response["desc"], "request parameter is invalid.")
-                self.assertEqual(response["watchTips"], "Your account has been suspend")
+                self.assertEqual(response["watchTips"], "Your account has been suspended")
                 self.assertIsNone(response["data"])
 
         # The optional-token endpoints are gated too.
@@ -702,7 +702,7 @@ class MomentServerTest(unittest.TestCase):
             "/moment/auth/login", json={"username": "noluck", "password": "pw"}
         ).get_json()
         self.assertEqual(login["code"], "000007")
-        self.assertEqual(login["watchTips"], "Your account has been suspend")
+        self.assertEqual(login["watchTips"], "Your account has been suspended")
 
     def test_unban_restores_access(self):
         self.post_form("/login", data={"username": "admin", "password": "admin123"})

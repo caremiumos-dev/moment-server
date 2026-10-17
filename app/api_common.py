@@ -24,7 +24,7 @@ ERROR_FORBIDDEN = "000006"
 # desc/tips pair; the watch keys its "account suspended" prompt off them.
 ERROR_ACCOUNT_SUSPENDED = "000007"
 SUSPENDED_DESC = "request parameter is invalid."
-SUSPENDED_TIPS = "Your account has been suspend"
+SUSPENDED_TIPS = "Your account has been suspended"
 # ``HttpAuthManager.AUTH_ERROR_CODE``: the client broadcasts "auth failed" and
 # the launcher re-authenticates the watch.
 ERROR_AUTH_FAILED = "000016"
