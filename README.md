@@ -187,6 +187,24 @@ dashboard 的账号列表里点「封禁」即可。封禁后的行为：
 `GET /social-service/warmReminder/getWarmReminderConfig`、
 `GET /moment-service/topic/recommend/list`、`POST /social-service/inform/*`。
 
+### 动态可见范围
+
+发布时客户端提交 `permissionType` 和 `lookupIds`，服务端按以下四种范围过滤
+`/moment/search`，并在点赞、评论和评论读取接口再次检查权限：
+
+| 类型 | 含义 | 服务端规则 |
+|---|---|---|
+| `0` | 所有好友可见 | 作者本人或作者的服务器好友可见 |
+| `1` | 指定好友可见 | 作者本人或被选中的 watchId 可见 |
+| `2` | 指定好友不可见 | 作者本人或作者的其他服务器好友可见 |
+| `3` | 仅自己可见 | 只有作者本人可见 |
+
+`type=1/2` 必须至少携带一个 watchId；服务端会去除自己的 watchId、空值和重复项。
+选择名单保存在新建的 `moment_visibilities` 表中，旧数据库启动时会自动建表，
+不需要手工迁移。`/moment/permission/search` 只允许动态作者（或管理员）读取，
+返回 `permissionType`/`type` 与 `lookupIds`/`friends` 两套兼容字段；
+`/moment/permission/update` 同时接受这两套字段，且只有作者或管理员能修改。
+
 ### 心情/状态模板
 
 发布页进入时会调用 `POST /moment/template`，把返回的 `resources` 全部写进

@@ -6,7 +6,7 @@ import datetime as dt
 from pathlib import Path
 
 from flask import Blueprint, current_app, g, request
-from sqlalchemy import desc as sql_desc
+from sqlalchemy import and_, desc as sql_desc, or_
 
 from app.api_common import (
     ERROR_INVALID_PARAM,
@@ -17,8 +17,10 @@ from app.api_common import (
 )
 from app.models import (
     Comment,
+    Friendship,
     Like,
     Moment,
+    MomentVisibility,
     MomentTemplate,
     Topic,
     User,
@@ -40,6 +42,19 @@ api = Blueprint("api", __name__)
 
 DEFAULT_PAGE_SIZE = 20
 
+# ``FriendsVisibleBean.type`` values used by the watch client.
+VISIBLE_ALL_FRIENDS = 0
+VISIBLE_SELECTED_FRIENDS = 1
+VISIBLE_ALL_EXCEPT_SELECTED = 2
+VISIBLE_SELF_ONLY = 3
+VALID_VISIBILITY_TYPES = {
+    VISIBLE_ALL_FRIENDS,
+    VISIBLE_SELECTED_FRIENDS,
+    VISIBLE_ALL_EXCEPT_SELECTED,
+    VISIBLE_SELF_ONLY,
+}
+MAX_VISIBILITY_IDS = 500
+
 
 def dt_from_millis(value):
     """Convert the client's millisecond timestamps into naive UTC datetimes."""
@@ -54,6 +69,133 @@ def _new_id(prefix=""):
     return f"{prefix}{secrets.token_hex(16)}"
 
 
+def _visibility_values(payload, author, accept_type_alias=False):
+    """Validate the visibility payload and return ``(type, watch_ids)``.
+
+    ``None`` as the first tuple item means the request is invalid.  Partial
+    ranges must contain at least one friend.  Full and self-only ranges ignore
+    any stale lookup ids supplied by an older client.
+    """
+    raw_permission_type = payload.get("permissionType")
+    if raw_permission_type is None and accept_type_alias:
+        raw_permission_type = payload.get("type", 0)
+    try:
+        permission_type = int(raw_permission_type or 0)
+    except (TypeError, ValueError):
+        return None, []
+    if permission_type not in VALID_VISIBILITY_TYPES:
+        return None, []
+
+    raw_ids = payload.get("lookupIds")
+    if raw_ids is None:
+        raw_ids = payload.get("friends")
+    if isinstance(raw_ids, str):
+        try:
+            raw_ids = json.loads(raw_ids)
+        except (TypeError, ValueError):
+            raw_ids = []
+    if not isinstance(raw_ids, list):
+        raw_ids = []
+
+    watch_ids = []
+    seen = set()
+    for raw_id in raw_ids:
+        watch_id = str(raw_id or "").strip()
+        if not watch_id or watch_id == author.watch_id or watch_id in seen:
+            continue
+        seen.add(watch_id)
+        watch_ids.append(watch_id)
+        if len(watch_ids) >= MAX_VISIBILITY_IDS:
+            break
+
+    if permission_type in (VISIBLE_SELECTED_FRIENDS, VISIBLE_ALL_EXCEPT_SELECTED):
+        if not watch_ids:
+            return None, []
+    else:
+        watch_ids = []
+    return permission_type, watch_ids
+
+
+def _replace_moment_visibilities(session, moment, watch_ids):
+    """Replace the selected watch ids for a moment while preserving order."""
+    session.query(MomentVisibility).filter_by(moment_id=moment.moment_id).delete(
+        synchronize_session=False
+    )
+    for watch_id in watch_ids:
+        session.add(MomentVisibility(moment_id=moment.moment_id, watch_id=watch_id))
+
+
+def _visibility_condition(session, viewer):
+    """SQL condition selecting moments that ``viewer`` is allowed to read.
+
+    Type 0 and type 2 require a server-side friendship with the author.  The
+    selected watch ids for type 1/2 need not be server friends, which keeps the
+    client's provider fallback usable when its address book contains a contact
+    that the dashboard has not registered.
+    """
+    friend_authors = session.query(Friendship.friend_user_id).filter(
+        Friendship.user_id == viewer.id
+    )
+    is_selected = (
+        session.query(MomentVisibility.id)
+        .filter(
+            MomentVisibility.moment_id == Moment.moment_id,
+            MomentVisibility.watch_id == viewer.watch_id,
+        )
+        .exists()
+    )
+    return or_(
+        Moment.user_id == viewer.id,
+        and_(Moment.permission_type == VISIBLE_ALL_FRIENDS,
+             Moment.user_id.in_(friend_authors)),
+        and_(Moment.permission_type == VISIBLE_SELECTED_FRIENDS, is_selected),
+        and_(Moment.permission_type == VISIBLE_ALL_EXCEPT_SELECTED,
+             Moment.user_id.in_(friend_authors), ~is_selected),
+    )
+
+
+def _can_view_moment(session, moment, viewer):
+    """Python equivalent of :func:`_visibility_condition` for one moment."""
+    if moment is None or viewer is None:
+        return False
+    if moment.user_id == viewer.id:
+        return True
+    if moment.permission_type == VISIBLE_SELECTED_FRIENDS:
+        return (
+            session.query(MomentVisibility.id)
+            .filter_by(moment_id=moment.moment_id, watch_id=viewer.watch_id)
+            .first()
+            is not None
+        )
+    if moment.permission_type not in (VISIBLE_ALL_FRIENDS, VISIBLE_ALL_EXCEPT_SELECTED):
+        return False
+    is_friend = (
+        session.query(Friendship.id)
+        .filter_by(user_id=viewer.id, friend_user_id=moment.user_id)
+        .first()
+        is not None
+    )
+    if not is_friend:
+        return False
+    if moment.permission_type == VISIBLE_ALL_FRIENDS:
+        return True
+    excluded = (
+        session.query(MomentVisibility.id)
+        .filter_by(moment_id=moment.moment_id, watch_id=viewer.watch_id)
+        .first()
+    )
+    return excluded is None
+
+
+def _visible_moment(session, moment_id, viewer):
+    moment = (
+        session.query(Moment)
+        .filter(Moment.moment_id == moment_id, Moment.deleted.is_(False))
+        .one_or_none()
+    )
+    return moment if _can_view_moment(session, moment, viewer) else None
+
+
 @api.post("/moment/public")
 @authenticate()
 def publish_moment():
@@ -63,6 +205,9 @@ def publish_moment():
     payload = _body()
     session = get_session()
     try:
+        permission_type, lookup_ids = _visibility_values(payload, g.current_user)
+        if permission_type is None:
+            return fail(ERROR_INVALID_PARAM, "invalid visibility range")
         topic_list = payload.get("topicList")
         moment = Moment(
             moment_id=_new_id(),
@@ -73,11 +218,13 @@ def publish_moment():
             resource_id=int(payload.get("resourceId") or 0),
             location=payload.get("location") or "",
             emotion_id=int(payload.get("emotionId") or 0),
-            permission_type=int(payload.get("permissionType") or 0),
+            permission_type=permission_type,
             topic_list_json=json.dumps(topic_list, ensure_ascii=False) if topic_list else "",
             create_time=utcnow(),
         )
         session.add(moment)
+        session.flush()
+        _replace_moment_visibilities(session, moment, lookup_ids)
         session.commit()
         return ok(serialize_moment(moment, g.current_user.id))
     finally:
@@ -112,9 +259,9 @@ def search_moment():
     ``MomentPresenter`` -> ``getMomentsFromNet(count, 1, watchId, endTime)`` ->
     ``searchMoment(begin=0, end=endTime-1, friend=1, from=0, size=count, ...)``.
     So ``size`` is the page size, ``friend`` is the page number (always 1), and
-    paging happens by moving the ``end`` bound backwards in time.  The client
-    keeps every returned moment in its local database and filters the personal
-    list there, so this endpoint always answers with the shared feed.
+    paging happens by moving the ``end`` bound backwards in time.  The query is
+    filtered by the viewer's server-side friendships and the moment visibility
+    rule before paging, so hidden moments never contribute to ``total``.
     """
     payload = _body()
     size = int(payload.get("size") or DEFAULT_PAGE_SIZE)
@@ -124,7 +271,9 @@ def search_moment():
     begin = int(payload.get("begin") or 0)
     session = get_session()
     try:
-        query = session.query(Moment).filter(Moment.deleted.is_(False))
+        query = session.query(Moment).filter(
+            Moment.deleted.is_(False), _visibility_condition(session, g.current_user)
+        )
         if end > 0:
             query = query.filter(Moment.create_time <= dt_from_millis(end))
         if begin > 0:
@@ -155,7 +304,7 @@ def like_moment():
     payload = _body()
     session = get_session()
     try:
-        moment = session.query(Moment).filter_by(moment_id=payload.get("momentId")).one_or_none()
+        moment = _visible_moment(session, payload.get("momentId"), g.current_user)
         if moment is None:
             return fail(ERROR_NOT_FOUND, "moment not found")
         existing = (
@@ -213,7 +362,16 @@ def search_like():
     moment_ids = payload.get("momentIds") or []
     session = get_session()
     try:
-        likes = session.query(Like).filter(Like.moment_id.in_(moment_ids)).all() if moment_ids else []
+        visible_ids = []
+        if moment_ids:
+            visible_ids = [
+                row.moment_id
+                for row in session.query(Moment).filter(
+                    Moment.moment_id.in_(moment_ids), Moment.deleted.is_(False),
+                    _visibility_condition(session, g.current_user),
+                )
+            ]
+        likes = session.query(Like).filter(Like.moment_id.in_(visible_ids)).all() if visible_ids else []
         grouped = {}
         for like in likes:
             grouped.setdefault(like.moment_id, []).append(serialize_like(like))
@@ -230,7 +388,7 @@ def comment_moment():
     payload = _body()
     session = get_session()
     try:
-        moment = session.query(Moment).filter_by(moment_id=payload.get("momentId")).one_or_none()
+        moment = _visible_moment(session, payload.get("momentId"), g.current_user)
         if moment is None:
             return fail(ERROR_NOT_FOUND, "moment not found")
         comment = Comment(
@@ -296,6 +454,8 @@ def get_moment_comment():
     page_size = int(payload.get("pageSize") or DEFAULT_PAGE_SIZE)
     session = get_session()
     try:
+        if _visible_moment(session, payload.get("momentId"), g.current_user) is None:
+            return fail(ERROR_NOT_FOUND, "moment not found")
         query = (
             session.query(Comment)
             .filter_by(moment_id=payload.get("momentId"))
@@ -324,6 +484,8 @@ def get_moment_comment_all():
     payload = _body()
     session = get_session()
     try:
+        if _visible_moment(session, payload.get("momentId"), g.current_user) is None:
+            return fail(ERROR_NOT_FOUND, "moment not found")
         comments = (
             session.query(Comment)
             .filter_by(moment_id=payload.get("momentId"))
@@ -353,22 +515,54 @@ def is_banned_to_post():
 @api.post("/moment/permission/search")
 @authenticate()
 def permission_search():
-    """Return the visibility scope of the requested moments.
-
-    ``FriendsVisibleBean`` carries ``type``/``friends``/``momentId``; type ``0``
-    means "visible to everyone", which is what this server always uses.
-    """
+    """Return the visibility scope of moments owned by the caller."""
     payload = _body()
-    moment_ids = payload.get("momentIds") or []
+    raw_ids = payload.get("momentIds") if isinstance(payload, dict) else None
+    moment_ids = []
+    seen = set()
+    for raw_id in raw_ids if isinstance(raw_ids, list) else []:
+        moment_id = str(raw_id or "").strip()
+        if moment_id and moment_id not in seen:
+            seen.add(moment_id)
+            moment_ids.append(moment_id)
+            if len(moment_ids) >= 200:
+                break
+    if not moment_ids:
+        return ok([])
     session = get_session()
     try:
-        watch_ids = [user.watch_id for user in session.query(User).filter_by(is_active=True).all()]
-        return ok(
-            [
-                {"type": 0, "friends": watch_ids, "momentId": moment_id}
-                for moment_id in moment_ids
-            ]
+        moments = (
+            session.query(Moment)
+            .filter(Moment.moment_id.in_(moment_ids), Moment.deleted.is_(False))
+            .all()
         )
+        moment_map = {moment.moment_id: moment for moment in moments}
+        visibility_rows = (
+            session.query(MomentVisibility)
+            .filter(MomentVisibility.moment_id.in_(moment_ids))
+            .order_by(MomentVisibility.id)
+            .all()
+        )
+        ids_by_moment = {}
+        for row in visibility_rows:
+            ids_by_moment.setdefault(row.moment_id, []).append(row.watch_id)
+        result = []
+        for moment_id in moment_ids:
+            moment = moment_map.get(moment_id)
+            if moment is None:
+                continue
+            if moment.user_id != g.current_user.id and not g.current_user.is_admin:
+                continue
+            result.append(
+                {
+                    "type": moment.permission_type,
+                    "permissionType": moment.permission_type,
+                    "friends": ids_by_moment.get(moment_id, []),
+                    "lookupIds": ids_by_moment.get(moment_id, []),
+                    "momentId": moment_id,
+                }
+            )
+        return ok(result)
     finally:
         session.close()
 
@@ -376,7 +570,28 @@ def permission_search():
 @api.post("/moment/permission/update")
 @authenticate()
 def permission_update():
-    return ok("1")
+    payload = _body()
+    moment_id = str(payload.get("momentId") or "").strip()
+    if not moment_id:
+        return fail(ERROR_INVALID_PARAM, "momentId is required")
+    session = get_session()
+    try:
+        moment = session.query(Moment).filter_by(moment_id=moment_id).one_or_none()
+        if moment is None or moment.deleted:
+            return fail(ERROR_NOT_FOUND, "moment not found")
+        if moment.user_id != g.current_user.id and not g.current_user.is_admin:
+            return fail(ERROR_INVALID_PARAM, "not the owner")
+        permission_type, lookup_ids = _visibility_values(
+            payload, moment.author, accept_type_alias=True
+        )
+        if permission_type is None:
+            return fail(ERROR_INVALID_PARAM, "invalid visibility range")
+        moment.permission_type = permission_type
+        _replace_moment_visibilities(session, moment, lookup_ids)
+        session.commit()
+        return ok("1")
+    finally:
+        session.close()
 
 
 @api.post("/moment/doLbsStar")

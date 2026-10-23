@@ -160,6 +160,33 @@ class Moment(Base):
     author: Mapped[User] = relationship(back_populates="moments")
     comments: Mapped[list["Comment"]] = relationship(back_populates="moment", cascade="all, delete-orphan")
     likes: Mapped[list["Like"]] = relationship(back_populates="moment", cascade="all, delete-orphan")
+    visibilities: Mapped[list["MomentVisibility"]] = relationship(
+        back_populates="moment", cascade="all, delete-orphan"
+    )
+
+
+class MomentVisibility(Base):
+    """A watch id explicitly included in or excluded from one moment.
+
+    ``Moment.permission_type`` selects the rule and this table stores the
+    selected watch ids for the two partial ranges.  Rows are ordered by their
+    primary key so ``/moment/permission/search`` can return the same selection
+    order that the watch submitted.
+    """
+
+    __tablename__ = "moment_visibilities"
+    __table_args__ = (
+        UniqueConstraint("moment_id", "watch_id", name="uq_moment_visibility_watch"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    moment_id: Mapped[str] = mapped_column(
+        ForeignKey("moments.moment_id"), nullable=False, index=True
+    )
+    watch_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    create_time: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    moment: Mapped[Moment] = relationship(back_populates="visibilities")
 
 
 class Comment(Base):

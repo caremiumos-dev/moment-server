@@ -62,6 +62,19 @@ class MomentServerTest(unittest.TestCase):
         payload.setdefault("csrf_token", token)
         return self.client.post(path, data=payload, **kwargs)
 
+    def add_friend(self, owner_watch_id, friend_watch_id, remark=""):
+        """Create a friendship through the dashboard route."""
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            owner_id = db.query(User).filter_by(watch_id=owner_watch_id).one().id
+            db.close()
+        return self.post_form(
+            f"/friends/{owner_id}/add",
+            data={"friend_watch_id": friend_watch_id, "remark": remark},
+        )
+
     def test_health(self):
         response = self.client.get("/healthz")
         self.assertEqual(response.status_code, 200)
@@ -209,6 +222,7 @@ class MomentServerTest(unittest.TestCase):
         )
         owner_headers = {"Base-Request-Param": base_param("WLIKE1")}
         guest_headers = {"Base-Request-Param": base_param("WLIKE2")}
+        self.add_friend("WLIKE1", "WLIKE2")
         moment = self.client.post(
             "/moment/public", json={"type": 3, "content": "like test"},
             headers=owner_headers,
@@ -248,6 +262,7 @@ class MomentServerTest(unittest.TestCase):
         )
         owner_headers = {"Base-Request-Param": base_param("W3011")}
         guest_headers = {"Base-Request-Param": base_param("W3012")}
+        self.add_friend("W3011", "W3012")
 
         moment = self.client.post(
             "/moment/public", json={"type": 3, "content": "hello"}, headers=owner_headers
@@ -273,6 +288,175 @@ class MomentServerTest(unittest.TestCase):
             headers=owner_headers,
         ).get_json()["data"]["comments"]
         self.assertNotIn(comment_id, [c["commentId"] for c in remaining])
+
+    def test_visibility_ranges_round_trip_and_filter_feed(self):
+        """All four visibility modes persist and scope the moment feed."""
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        for username, watch_id in [
+            ("visibility-owner", "WVIS1"),
+            ("visibility-selected", "WVIS2"),
+            ("visibility-excluded", "WVIS3"),
+            ("visibility-stranger", "WVIS4"),
+        ]:
+            self.post_form(
+                "/users/create",
+                data={"username": username, "password": "pw", "watch_id": watch_id,
+                      "is_active": "on"},
+            )
+        self.add_friend("WVIS1", "WVIS2", "可见好友")
+        self.add_friend("WVIS1", "WVIS3", "被排除好友")
+
+        owner = {"Base-Request-Param": base_param("WVIS1")}
+        selected = {"Base-Request-Param": base_param("WVIS2")}
+        excluded = {"Base-Request-Param": base_param("WVIS3")}
+        stranger = {"Base-Request-Param": base_param("WVIS4")}
+
+        all_moment = self.client.post(
+            "/moment/public",
+            json={"type": 3, "content": "VIS-ALL", "permissionType": 0},
+            headers=owner,
+        ).get_json()["data"]
+        selected_moment = self.client.post(
+            "/moment/public",
+            json={"type": 3, "content": "VIS-SELECTED", "permissionType": 1,
+                  "lookupIds": ["WVIS2", "WVIS2", "", "WVIS1"]},
+            headers=owner,
+        ).get_json()["data"]
+        excluded_moment = self.client.post(
+            "/moment/public",
+            json={"type": 3, "content": "VIS-EXCEPT", "permissionType": 2,
+                  "lookupIds": ["WVIS3"]},
+            headers=owner,
+        ).get_json()["data"]
+        self_moment = self.client.post(
+            "/moment/public",
+            json={"type": 3, "content": "VIS-SELF", "permissionType": 3,
+                  "lookupIds": ["WVIS2"]},
+            headers=owner,
+        ).get_json()["data"]
+
+        def contents(headers):
+            rows = self.client.post(
+                "/moment/search", json={"size": 200}, headers=headers
+            ).get_json()["data"]["watchMoments"]
+            return [row["content"] for row in rows if str(row["content"]).startswith("VIS-")]
+
+        # The author always sees all of their own moments.
+        self.assertEqual(
+            {"VIS-ALL", "VIS-SELECTED", "VIS-EXCEPT", "VIS-SELF"}, set(contents(owner))
+        )
+        # Included friends see type 0/1/2, but never type 3.
+        self.assertEqual({"VIS-ALL", "VIS-SELECTED", "VIS-EXCEPT"},
+                         set(contents(selected)))
+        # The type-2 exclusion wins over the friendship baseline.
+        self.assertEqual({"VIS-ALL"}, set(contents(excluded)))
+        # Non-friends cannot see any of these ranges, even the "all friends" one.
+        self.assertEqual([], contents(stranger))
+
+        listed = self.client.post(
+            "/moment/permission/search",
+            json={"momentIds": [self_moment["momentId"], all_moment["momentId"],
+                                selected_moment["momentId"], excluded_moment["momentId"]]},
+            headers=owner,
+        ).get_json()["data"]
+        self.assertEqual(
+            [self_moment["momentId"], all_moment["momentId"],
+             selected_moment["momentId"], excluded_moment["momentId"]],
+            [row["momentId"] for row in listed],
+        )
+        self.assertEqual([3, 0, 1, 2], [row["type"] for row in listed])
+        self.assertEqual([3, 0, 1, 2], [row["permissionType"] for row in listed])
+        self.assertEqual([[], [], ["WVIS2"], ["WVIS3"]],
+                         [row["friends"] for row in listed])
+        self.assertEqual([[], [], ["WVIS2"], ["WVIS3"]],
+                         [row["lookupIds"] for row in listed])
+
+        # Scope details are owner-only; another account cannot enumerate them.
+        hidden_scope = self.client.post(
+            "/moment/permission/search",
+            json={"momentIds": [selected_moment["momentId"]]}, headers=selected,
+        ).get_json()
+        self.assertEqual(hidden_scope["data"], [])
+
+        # Hidden moments are also protected from direct like/comment calls.
+        blocked_comment = self.client.post(
+            "/moment/comment", json={"momentId": self_moment["momentId"], "comment": "x"},
+            headers=selected,
+        ).get_json()
+        self.assertEqual(blocked_comment["code"], "000005")
+        blocked_like = self.client.post(
+            "/moment/like", json={"momentId": self_moment["momentId"]}, headers=selected
+        ).get_json()
+        self.assertEqual(blocked_like["code"], "000005")
+        blocked_comments = self.client.post(
+            "/moment/getMomentComment", json={"momentId": self_moment["momentId"]},
+            headers=selected,
+        ).get_json()
+        self.assertEqual(blocked_comments["code"], "000005")
+
+        # Updating type 2 -> type 1 switches the excluded friend for the selected one.
+        updated = self.client.post(
+            "/moment/permission/update",
+            json={"momentId": excluded_moment["momentId"], "permissionType": 1,
+                  "lookupIds": ["WVIS2"]},
+            headers=owner,
+        ).get_json()
+        self.assertEqual(updated["code"], "000001")
+        self.assertIn("VIS-EXCEPT", contents(selected))
+        self.assertNotIn("VIS-EXCEPT", contents(excluded))
+
+        updated_scope = self.client.post(
+            "/moment/permission/search", json={"momentIds": [excluded_moment["momentId"]]},
+            headers=owner,
+        ).get_json()["data"][0]
+        self.assertEqual(1, updated_scope["type"])
+        self.assertEqual(1, updated_scope["permissionType"])
+        self.assertEqual(["WVIS2"], updated_scope["friends"])
+        self.assertEqual(["WVIS2"], updated_scope["lookupIds"])
+
+    def test_visibility_validation_and_owner_only_update(self):
+        """Malformed partial ranges are rejected and non-owners cannot edit scope."""
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        self.post_form(
+            "/users/create",
+            data={"username": "scope-owner", "password": "pw", "watch_id": "WSCOPE1",
+                  "is_active": "on"},
+        )
+        self.post_form(
+            "/users/create",
+            data={"username": "scope-other", "password": "pw", "watch_id": "WSCOPE2",
+                  "is_active": "on"},
+        )
+        owner = {"Base-Request-Param": base_param("WSCOPE1")}
+        other = {"Base-Request-Param": base_param("WSCOPE2")}
+
+        for payload in [
+            {"type": 3, "content": "bad-empty-selected", "permissionType": 1},
+            {"type": 3, "content": "bad-empty-except", "permissionType": 2,
+             "lookupIds": []},
+            {"type": 3, "content": "bad-type", "permissionType": 9},
+        ]:
+            with self.subTest(permission_type=payload["permissionType"]):
+                response = self.client.post("/moment/public", json=payload,
+                                            headers=owner).get_json()
+                self.assertEqual("000002", response["code"])
+
+        moment = self.client.post(
+            "/moment/public", json={"type": 3, "content": "scope-owner-test"},
+            headers=owner,
+        ).get_json()["data"]
+        denied = self.client.post(
+            "/moment/permission/update",
+            json={"momentId": moment["momentId"], "type": 3, "friends": []},
+            headers=other,
+        ).get_json()
+        self.assertEqual("000002", denied["code"])
+
+        still_public = self.client.post(
+            "/moment/permission/search", json={"momentIds": [moment["momentId"]]},
+            headers=owner,
+        ).get_json()["data"][0]
+        self.assertEqual(0, still_public["type"])
 
     def test_dashboard_posts_require_csrf_token(self):
         self.post_form("/login", data={"username": "admin", "password": "admin123"})
