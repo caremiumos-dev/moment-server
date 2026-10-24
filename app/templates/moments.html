@@ -2,6 +2,54 @@
 {% block title %}动态管理 - 好友圈服务端{% endblock %}
 {% block content %}
 <section class="card">
+    <h2>发布官方动态</h2>
+    <form method="post" action="{{ url_for('dashboard.create_official_moment') }}"
+          enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="inline">
+            <label>发布身份
+                <select name="identity_mode" id="identity-mode">
+                    <option value="user">选择现有用户</option>
+                    <option value="custom">自定义头像和名称</option>
+                </select>
+            </label>
+            <label id="user-identity">用户
+                <select name="user_id">
+                    {% for user in users %}
+                        <option value="{{ user.id }}">{{ user.effective_name }} · {{ user.watch_id }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label id="custom-name" hidden>显示名称
+                <input type="text" name="publisher_name" placeholder="官方账号名称">
+            </label>
+        </div>
+        <div class="inline" id="custom-identity" hidden>
+            <label>自定义发布者 ID
+                <input type="text" name="publisher_watch_id" value="official" placeholder="official">
+            </label>
+            <label>头像文件
+                <input type="file" name="publisher_avatar" accept="image/png,image/jpeg,image/webp,image/gif">
+            </label>
+            <label>头像地址
+                <input type="text" name="publisher_avatar_url" placeholder="上传优先；也可填完整 URL">
+            </label>
+        </div>
+        <label>标题 / 正文
+            <textarea name="title" rows="3" placeholder="官方动态正文"></textarea>
+        </label>
+        <div class="inline">
+            <label>配图文件
+                <input type="file" name="image" accept="image/png,image/jpeg,image/webp,image/gif">
+            </label>
+            <label>配图地址
+                <input type="text" name="image_url" placeholder="上传优先；也可填完整 URL">
+            </label>
+            <button type="submit">发布官方动态</button>
+        </div>
+    </form>
+</section>
+<section class="card">
     <h2>动态（共 {{ total }} 条）</h2>
     <table>
         <thead>
@@ -14,8 +62,12 @@
         {% for moment in moments %}
             <tr>
                 <td>{{ moment.id }}</td>
-                <td>{{ moment.author.effective_name }}<br><span class="mono">{{ moment.author.watch_id }}</span></td>
-                <td>{{ moment.type }}</td>
+                <td>
+                    {% if moment.is_official %}<span class="tag">官方</span>{% endif %}
+                    {{ moment.publisher_name if moment.is_official else moment.author.effective_name }}<br>
+                    <span class="mono">{{ moment.publisher_watch_id if moment.is_official else moment.author.watch_id }}</span>
+                </td>
+                <td>{{ moment.type }}{% if moment.is_official %}（官方）{% endif %}</td>
                 <td class="content">{{ moment.content }}</td>
                 <td class="mono">{{ moment.topic_list_json }}</td>
                 <td>{{ moment.create_time.strftime("%Y-%m-%d %H:%M") }}</td>
@@ -38,4 +90,20 @@
         </p>
     {% endif %}
 </section>
+<script>
+(() => {
+    const mode = document.getElementById("identity-mode");
+    const userIdentity = document.getElementById("user-identity");
+    const customIdentity = document.getElementById("custom-identity");
+    const customName = document.getElementById("custom-name");
+    function sync() {
+        const custom = mode.value === "custom";
+        userIdentity.hidden = custom;
+        customIdentity.hidden = !custom;
+        customName.hidden = !custom;
+    }
+    mode.addEventListener("change", sync);
+    sync();
+})();
+</script>
 {% endblock %}

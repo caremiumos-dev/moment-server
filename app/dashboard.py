@@ -446,6 +446,87 @@ def delete_moment(moment_id):
     return redirect(url_for("dashboard.moments"))
 
 
+@dashboard.post("/moments/official")
+@login_required
+def create_official_moment():
+    """Publish an official moment from the dashboard.
+
+    The selected user owns the row so comments and moderation keep their usual
+    ownership rules, while the publisher name/avatar are snapshotted into the
+    moment itself.  The protocol distinguishes official posts by the
+    ``is_official`` flag and returns them in ``Moments.adverts``.
+    """
+    form = request.form
+    title = (form.get("title") or "").strip()
+    identity_mode = (form.get("identity_mode") or "user").strip()
+    image_url = (form.get("image_url") or "").strip()
+
+    db = get_session()
+    try:
+        owner = None
+        if identity_mode == "user":
+            try:
+                owner_id = int(form.get("user_id") or 0)
+            except (TypeError, ValueError):
+                owner_id = 0
+            owner = db.get(User, owner_id)
+            if owner is None:
+                flash("请选择用于发布官方动态的账号", "error")
+                return redirect(url_for("dashboard.moments"))
+            publisher_watch_id = owner.watch_id
+            publisher_name = owner.effective_name
+            publisher_avatar = owner.avatar
+        else:
+            owner = current_user()
+            publisher_watch_id = (form.get("publisher_watch_id") or "official").strip()
+            publisher_name = (form.get("publisher_name") or "").strip()
+            if not publisher_name:
+                flash("自定义发布名称不能为空", "error")
+                return redirect(url_for("dashboard.moments"))
+            publisher_avatar, avatar_error = _save_dashboard_media(
+                request.files.get("publisher_avatar"), form.get("publisher_avatar_url"), "avatar"
+            )
+            if avatar_error:
+                flash(avatar_error, "error")
+                return redirect(url_for("dashboard.moments"))
+
+        image, image_error = _save_dashboard_media(
+            request.files.get("image"), image_url, "official"
+        )
+        if image_error:
+            flash(image_error, "error")
+            return redirect(url_for("dashboard.moments"))
+        if not title and not image:
+            flash("标题/正文和配图至少填写一项", "error")
+            return redirect(url_for("dashboard.moments"))
+
+        if image and title:
+            moment_type = 2
+        elif image:
+            moment_type = 1
+        else:
+            moment_type = 0
+        moment = Moment(
+            moment_id=secrets.token_hex(16),
+            user_id=owner.id,
+            type=moment_type,
+            content=title,
+            resource=image,
+            permission_type=0,
+            is_official=True,
+            publisher_watch_id=publisher_watch_id,
+            publisher_name=publisher_name,
+            publisher_avatar=publisher_avatar,
+            create_time=utcnow(),
+        )
+        db.add(moment)
+        db.commit()
+        flash(f"已发布官方动态「{title or '图片'}」", "ok")
+    finally:
+        db.close()
+    return redirect(url_for("dashboard.moments"))
+
+
 @dashboard.get("/moments")
 @login_required
 def moments():
@@ -461,9 +542,11 @@ def moments():
         total = query.count()
         rows = query.offset((page - 1) * page_size).limit(page_size).all()
         total_page = (total + page_size - 1) // page_size
+        users = db.query(User).order_by(User.id).all()
         return render_template(
             "moments.html",
             moments=rows,
+            users=users,
             me=current_user(),
             page=page,
             total_page=total_page,
@@ -604,6 +687,21 @@ def _save_user_avatar(upload, avatar_text):
     media_dir = Path(current_app.config["MEDIA_DIR"])
     media_dir.mkdir(parents=True, exist_ok=True)
     name = f"avatar_{secrets.token_hex(8)}{suffix}"
+    upload.save(os.fspath(media_dir / name))
+    return f"media:{name}", None
+
+
+def _save_dashboard_media(upload, resource_text, prefix):
+    """Save an image upload, or retain a pasted image URL."""
+    resource_text = (resource_text or "").strip()
+    if upload is None or not upload.filename:
+        return resource_text, None
+    suffix = Path(secure_filename(upload.filename)).suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        return None, "图片只支持 png/jpg/webp/gif"
+    media_dir = Path(current_app.config["MEDIA_DIR"])
+    media_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{prefix}_{secrets.token_hex(8)}{suffix}"
     upload.save(os.fspath(media_dir / name))
     return f"media:{name}", None
 

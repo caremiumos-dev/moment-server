@@ -458,6 +458,112 @@ class MomentServerTest(unittest.TestCase):
         ).get_json()["data"][0]
         self.assertEqual(0, still_public["type"])
 
+    def test_official_moment_identity_feed_and_comments(self):
+        """Dashboard official posts keep their publisher snapshot end to end."""
+        self.post_form("/login", data={"username": "admin", "password": "admin123"})
+        page = self.client.get("/moments").get_data(as_text=True)
+        self.assertIn("发布官方动态", page)
+        self.assertIn("选择现有用户", page)
+        self.assertIn("自定义头像和名称", page)
+        self.post_form(
+            "/users/create",
+            data={
+                "username": "official-publisher",
+                "password": "pw",
+                "watch_id": "WOFFICIAL1",
+                "display_name": "官方发布者",
+                "is_active": "on",
+            },
+        )
+        with self.app.app_context():
+            from app.models import User, get_session
+
+            db = get_session()
+            user_id = db.query(User).filter_by(watch_id="WOFFICIAL1").one().id
+            db.close()
+
+        self.post_form(
+            "/moments/official",
+            data={
+                "identity_mode": "user",
+                "user_id": str(user_id),
+                "title": "官方图文公告",
+                "image_url": "https://example.com/official-photo.png",
+            },
+        )
+        self.post_form(
+            "/moments/official",
+            data={
+                "identity_mode": "custom",
+                "publisher_watch_id": "official",
+                "publisher_name": "系统公告",
+                "publisher_avatar_url": "https://example.com/official-avatar.png",
+                "title": "官方纯文本公告",
+            },
+        )
+
+        headers = {"Base-Request-Param": base_param("WOFFICIAL1")}
+        feed = self.client.post(
+            "/moment/search", json={"size": 200}, headers=headers
+        ).get_json()["data"]
+        normal_contents = {row["content"] for row in feed["watchMoments"]}
+        self.assertNotIn("官方图文公告", normal_contents)
+        self.assertNotIn("官方纯文本公告", normal_contents)
+
+        by_content = {row["content"]: row for row in feed["adverts"]}
+        user_post = by_content["官方图文公告"]
+        self.assertEqual(user_post["name"], "官方发布者")
+        self.assertEqual(user_post["publisherId"], "WOFFICIAL1")
+        self.assertEqual(user_post["type"], 2)
+        self.assertEqual(user_post["resource"], "https://example.com/official-photo.png")
+        self.assertEqual(user_post["official"], 1)
+
+        custom_post = by_content["官方纯文本公告"]
+        self.assertEqual(custom_post["name"], "系统公告")
+        self.assertEqual(custom_post["icon"], "https://example.com/official-avatar.png")
+        self.assertEqual(custom_post["publisherId"], "official")
+        self.assertEqual(custom_post["type"], 0)
+
+        advert_id = custom_post["advertId"]
+        created = self.client.post(
+            "/moment/advertComment/comment",
+            json={"advertId": advert_id, "comment": "官方动态评论"},
+            headers=headers,
+        ).get_json()["data"]
+        self.assertEqual(created["result"], "1")
+        comment = created["advertCommentVo"]
+        self.assertEqual(comment["advertId"], advert_id)
+        self.assertEqual(comment["comment"], "官方动态评论")
+
+        comments = self.client.post(
+            "/moment/advertComment/getAdvertComment",
+            json={"advertId": advert_id, "pageNum": 1, "pageSize": 20},
+            headers=headers,
+        ).get_json()["data"]
+        self.assertEqual(comments["totalCount"], 1)
+        self.assertEqual(comments["comments"][0]["comment"], "官方动态评论")
+
+        all_comments = self.client.post(
+            "/moment/advertComment/getAllAdvert",
+            json={"advertIdList": [advert_id], "lookUpId": "WOFFICIAL1"},
+            headers=headers,
+        ).get_json()["data"]["advertVoList"]
+        self.assertEqual(all_comments[0]["advertId"], advert_id)
+        self.assertEqual(all_comments[0]["totalCount"], 1)
+
+        deleted = self.client.post(
+            "/moment/advertComment/deleteComment",
+            json={"commentId": comment["commentId"]},
+            headers=headers,
+        ).get_json()
+        self.assertEqual(deleted["code"], "000001")
+        after_delete = self.client.post(
+            "/moment/advertComment/getAdvertComment",
+            json={"advertId": advert_id, "pageNum": 1, "pageSize": 20},
+            headers=headers,
+        ).get_json()["data"]
+        self.assertEqual(after_delete["totalCount"], 0)
+
     def test_dashboard_posts_require_csrf_token(self):
         self.post_form("/login", data={"username": "admin", "password": "admin123"})
         # A valid session without the token is still rejected.

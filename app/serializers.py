@@ -25,6 +25,61 @@ def serialize_user(user):
     }
 
 
+def serialize_official_identity(moment):
+    """The publisher snapshot used by ``MomentAdvertise``."""
+    name = moment.publisher_name or moment.author.effective_name
+    watch_id = moment.publisher_watch_id or moment.author.watch_id
+    avatar = moment.publisher_avatar or moment.author.avatar
+    return watch_id, name, absolute_resource(avatar)
+
+
+def serialize_advert(moment, current_user_id=None):
+    """One entry of ``Moments.adverts``.
+
+    The watch maps advert types 0..4 to its own internal official types 10..14.
+    Unlike ``watchMoments``, an advert's text is carried by ``content`` and an
+    image by ``resource``; the image-only and image-text layouts are selected
+    by type 1 and 2 respectively.
+    """
+    comments = [comment for comment in moment.comments if not comment.deleted]
+    likes = moment.likes if moment.likes is not None else []
+    already_liked = any(
+        like.user_id == current_user_id for like in likes
+    ) if current_user_id is not None else False
+    watch_id, name, avatar = serialize_official_identity(moment)
+    advert_comments = []
+    for comment in comments:
+        payload = serialize_comment(comment)
+        payload.update(
+            {
+                "advertId": moment.moment_id,
+                "momentId": moment.moment_id,
+                "parentWatchId": watch_id,
+            }
+        )
+        advert_comments.append(payload)
+    return {
+        "advertId": moment.moment_id,
+        "publisherId": watch_id,
+        "name": name,
+        "icon": avatar,
+        "type": moment.type,
+        "content": moment.content,
+        "resource": absolute_resource(moment.resource),
+        "publishTime": millis(moment.create_time),
+        "scaleType": 0,
+        "likeTotal": len(likes),
+        "enableLike": 0 if already_liked else 1,
+        "comments": advert_comments,
+        "dataUrl": "",
+        "topicList": _topic_list(moment.topic_list_json),
+        "topicNames": "",
+        "top": 0,
+        "official": 1,
+        "topExpireTime": 0,
+    }
+
+
 def serialize_moment(moment, current_user_id=None):
     """One entry of ``Moments.watchMoments``.
 
@@ -44,15 +99,21 @@ def serialize_moment(moment, current_user_id=None):
     already_liked = any(
         like.user_id == current_user_id for like in likes
     ) if current_user_id is not None else False
+    if moment.is_official:
+        watch_id, display_name, display_avatar = serialize_official_identity(moment)
+    else:
+        watch_id = moment.author.watch_id
+        display_name = moment.author.effective_name
+        display_avatar = absolute_resource(moment.author.avatar)
     return {
         "id": moment.id,
         "momentId": moment.moment_id,
         "lookupId": "",
         "parentId": "",
-        "watchId": moment.author.watch_id,
-        "watchName": moment.author.effective_name,
-        "name": moment.author.effective_name,
-        "iconPath": absolute_resource(moment.author.avatar),
+        "watchId": watch_id,
+        "watchName": display_name,
+        "name": display_name,
+        "iconPath": display_avatar,
         "type": moment.type,
         "content": moment.content,
         "resource": moment.resource,
@@ -68,7 +129,7 @@ def serialize_moment(moment, current_user_id=None):
         "checked": True,
         "skiped": False,
         "previewed": False,
-        "official": 0,
+        "official": 1 if moment.is_official else 0,
         "top": 0,
         "topExpireTime": 0,
         "scaleType": 0,

@@ -31,6 +31,7 @@ from app.models import (
 )
 from app.media import absolute_resource, media_url
 from app.serializers import (
+    serialize_advert,
     serialize_comment,
     serialize_like,
     serialize_moment,
@@ -145,6 +146,7 @@ def _visibility_condition(session, viewer):
         .exists()
     )
     return or_(
+        Moment.is_official.is_(True),
         Moment.user_id == viewer.id,
         and_(Moment.permission_type == VISIBLE_ALL_FRIENDS,
              Moment.user_id.in_(friend_authors)),
@@ -158,6 +160,8 @@ def _can_view_moment(session, moment, viewer):
     """Python equivalent of :func:`_visibility_condition` for one moment."""
     if moment is None or viewer is None:
         return False
+    if moment.is_official:
+        return True
     if moment.user_id == viewer.id:
         return True
     if moment.permission_type == VISIBLE_SELECTED_FRIENDS:
@@ -194,6 +198,53 @@ def _visible_moment(session, moment_id, viewer):
         .one_or_none()
     )
     return moment if _can_view_moment(session, moment, viewer) else None
+
+
+def _visible_official_moment(session, moment_id, viewer):
+    """Official moments are public to every authenticated watch."""
+    moment = (
+        session.query(Moment)
+        .filter(
+            Moment.moment_id == moment_id,
+            Moment.deleted.is_(False),
+            Moment.is_official.is_(True),
+        )
+        .one_or_none()
+    )
+    return moment if _can_view_moment(session, moment, viewer) else None
+
+
+def _moment_identity(moment):
+    """Display identity for an official or ordinary moment."""
+    if moment.is_official:
+        return (
+            moment.publisher_watch_id or moment.author.watch_id,
+            moment.publisher_name or moment.author.effective_name,
+            moment.publisher_avatar or moment.author.avatar,
+        )
+    return moment.author.watch_id, moment.author.effective_name, moment.author.avatar
+
+
+def _official_comments(moment):
+    return [comment for comment in moment.comments if not comment.deleted]
+
+
+def _official_comment_payload(comment):
+    """Advert comment fields consumed by ``PublishOfficialCommentTask``.
+
+    The watch treats an advert comment as belonging to the advert id, not the
+    normal moment id.  ``advertId`` is therefore the identity the detail page
+    uses when it later lists or deletes the comment.
+    """
+    payload = serialize_comment(comment)
+    payload.update(
+        {
+            "advertId": comment.moment.moment_id,
+            "momentId": comment.moment.moment_id,
+            "parentWatchId": _moment_identity(comment.moment)[0],
+        }
+    )
+    return payload
 
 
 @api.post("/moment/public")
@@ -284,9 +335,13 @@ def search_moment():
         return ok(
             {
                 "watchMoments": [
-                    serialize_moment(moment, g.current_user.id) for moment in moments
+                    serialize_moment(moment, g.current_user.id)
+                    for moment in moments if not moment.is_official
                 ],
-                "adverts": [],
+                "adverts": [
+                    serialize_advert(moment, g.current_user.id)
+                    for moment in moments if moment.is_official
+                ],
                 "likeNotify": None,
                 "maxLikeNum": 0,
                 "total": total,
@@ -325,7 +380,7 @@ def like_moment():
         return ok(
             {
                 "momentId": moment.moment_id,
-                "momentWatchId": moment.author.watch_id,
+                "momentWatchId": _moment_identity(moment)[0],
                 "watchId": g.current_user.watch_id,
                 "watchName": g.current_user.effective_name,
                 "emotionId": int(payload.get("emotionId") or 0),
@@ -815,27 +870,106 @@ def send_gift():
 @api.post("/moment/advertComment/getAllAdvert")
 @authenticate()
 def get_all_advert():
-    return ok({"advertVoList": []})
+    payload = _body()
+    raw_ids = payload.get("advertIdList") or []
+    if not isinstance(raw_ids, list):
+        raw_ids = []
+    advert_ids = []
+    for raw_id in raw_ids[:200]:
+        advert_id = str(raw_id or "").strip()
+        if advert_id and advert_id not in advert_ids:
+            advert_ids.append(advert_id)
+    session = get_session()
+    try:
+        query = session.query(Moment).filter(
+            Moment.deleted.is_(False), Moment.is_official.is_(True)
+        )
+        if advert_ids:
+            query = query.filter(Moment.moment_id.in_(advert_ids))
+        rows = query.order_by(sql_desc(Moment.create_time)).limit(200).all()
+        result = []
+        for moment in rows:
+            comments = _official_comments(moment)
+            result.append(
+                {
+                    "advertId": moment.moment_id,
+                    "list": [_official_comment_payload(comment) for comment in comments],
+                    "totalCount": len(comments),
+                }
+            )
+        return ok({"advertVoList": result})
+    finally:
+        session.close()
 
 
 @api.post("/moment/advertComment/getAdvertComment")
 @authenticate()
 def get_advert_comment():
-    return ok(
-        {
-            "comments": [],
-            "pageNum": int(_body().get("pageNum") or 1),
-            "pageSize": DEFAULT_PAGE_SIZE,
-            "totalCount": 0,
-            "totalPage": 0,
-        }
-    )
+    payload = _body()
+    page_num = max(int(payload.get("pageNum") or 1), 1)
+    page_size = max(int(payload.get("pageSize") or DEFAULT_PAGE_SIZE), 1)
+    session = get_session()
+    try:
+        moment = _visible_official_moment(session, payload.get("advertId"), g.current_user)
+        if moment is None:
+            return fail(ERROR_NOT_FOUND, "advert not found")
+        comments = _official_comments(moment)
+        comments.sort(key=lambda comment: comment.create_time, reverse=True)
+        total = len(comments)
+        page = comments[(page_num - 1) * page_size:page_num * page_size]
+        return ok(
+            {
+                "comments": [_official_comment_payload(comment) for comment in page],
+                "pageNum": page_num,
+                "pageSize": page_size,
+                "totalCount": total,
+                "totalPage": (total + page_size - 1) // page_size,
+            }
+        )
+    finally:
+        session.close()
 
 
 @api.post("/moment/advertComment/comment")
 @authenticate()
 def comment_advert():
-    return ok({"result": "1", "comment": None, "tips": ""})
+    payload = _body()
+    session = get_session()
+    try:
+        moment = _visible_official_moment(session, payload.get("advertId"), g.current_user)
+        if moment is None:
+            return fail(ERROR_NOT_FOUND, "advert not found")
+        comment = Comment(
+            comment_id=_new_id(),
+            moment_id=moment.moment_id,
+            user_id=g.current_user.id,
+            content=payload.get("comment") or "",
+            reply_comment_id=payload.get("replyCommentId") or "",
+            create_time=utcnow(),
+        )
+        reply_watch_id = payload.get("replyWatchId") or ""
+        if reply_watch_id:
+            parent = (
+                session.query(Comment)
+                .join(User, Comment.user_id == User.id)
+                .filter(
+                    Comment.moment_id == moment.moment_id,
+                    User.watch_id == reply_watch_id,
+                    Comment.deleted.is_(False),
+                )
+                .order_by(sql_desc(Comment.create_time))
+                .first()
+            )
+            if parent is not None:
+                comment.parent_id = parent.id
+                comment.reply_comment_id = parent.comment_id
+        session.add(comment)
+        session.commit()
+        return ok(
+            {"result": "1", "advertCommentVo": _official_comment_payload(comment), "tips": ""}
+        )
+    finally:
+        session.close()
 
 
 @api.post("/moment/advertComment/deleteComment")

@@ -154,6 +154,22 @@ class Moment(Base):
     emotion_id: Mapped[int] = mapped_column(Integer, default=0)
     permission_type: Mapped[int] = mapped_column(Integer, default=0)
     topic_list_json: Mapped[str] = mapped_column(Text, default="")
+    # Official posts share the normal comment/like tables, but the watch
+    # consumes them through ``Moments.adverts`` instead of ``watchMoments``.
+    # The publisher fields are snapshots: changing an account's dashboard
+    # avatar later must not rewrite posts that were already published.
+    is_official: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    publisher_watch_id: Mapped[str] = mapped_column(
+        String(64), default="", server_default="", nullable=False
+    )
+    publisher_name: Mapped[str] = mapped_column(
+        String(64), default="", server_default="", nullable=False
+    )
+    publisher_avatar: Mapped[str] = mapped_column(
+        Text, default="", server_default="", nullable=False
+    )
     create_time: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
@@ -330,6 +346,12 @@ ADDED_COLUMNS = {
     },
     "comments": {
         "parent_id": "INTEGER",
+    },
+    "moments": {
+        "is_official": "BOOLEAN NOT NULL DEFAULT 0",
+        "publisher_watch_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "publisher_name": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "publisher_avatar": "TEXT NOT NULL DEFAULT ''",
     },
 }
 
